@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from pathlib import Path
+
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse
 from telegram import Update
 
 from app.config import settings, validate_startup_settings
@@ -59,6 +62,12 @@ app.include_router(whoop_oauth.router)
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_policy() -> HTMLResponse:
+    path = Path(__file__).parent.parent / "docs" / "privacy-policy.html"
+    return HTMLResponse(content=path.read_text(encoding="utf-8"))
 
 
 @app.get("/debug/webhook")
