@@ -48,7 +48,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         scheduler.shutdown(wait=False)
-        await application.bot.delete_webhook()
         await application.stop()
         await application.shutdown()
 
