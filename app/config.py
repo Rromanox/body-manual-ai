@@ -38,11 +38,12 @@ class Settings:
 
 settings = Settings()
 
+# WHOOP credentials are not required at startup — the app boots and serves the
+# OAuth callback URL without them. They are only needed when a user runs
+# /connect_whoop, at which point whoop_client.py raises a clear error.
 _REQUIRED_FOR_STARTUP = (
     "telegram_bot_token",
     "admin_telegram_id",
-    "whoop_client_id",
-    "whoop_client_secret",
     "openai_api_key",
     "secret_key",
 )
