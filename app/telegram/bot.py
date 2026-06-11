@@ -10,7 +10,8 @@ _application: Application | None = None
 
 def build_application() -> Application:
     global _application
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    # updater(None) disables long-polling; we receive updates via webhook instead
+    application = Application.builder().token(settings.telegram_bot_token).updater(None).build()
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("connect_whoop", handlers.connect_whoop))
     application.add_handler(CommandHandler("today", handlers.today))
