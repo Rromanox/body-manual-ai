@@ -9,13 +9,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _fix_db_url(url: str) -> str:
+    # Railway (and some other hosts) provide postgresql:// but SQLAlchemy
+    # requires the explicit driver scheme postgresql+psycopg2://
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
-    admin_telegram_id: int = field(default_factory=lambda: int(os.getenv("ADMIN_TELEGRAM_ID", "0")))
+    admin_telegram_id: int = field(default_factory=lambda: int(os.getenv("ADMIN_TELEGRAM_ID") or "0"))
     database_url: str = field(
-        default_factory=lambda: os.getenv(
-            "DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/bodymanual"
+        default_factory=lambda: _fix_db_url(
+            os.getenv("DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/bodymanual")
         )
     )
     whoop_client_id: str = field(default_factory=lambda: os.getenv("WHOOP_CLIENT_ID", ""))
