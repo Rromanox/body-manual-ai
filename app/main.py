@@ -62,6 +62,17 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/debug/webhook")
+async def debug_webhook() -> dict:
+    info = await get_application().bot.get_webhook_info()
+    return {
+        "url": info.url,
+        "pending_update_count": info.pending_update_count,
+        "last_error_date": str(info.last_error_date) if info.last_error_date else None,
+        "last_error_message": info.last_error_message,
+    }
+
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request) -> Response:
     if request.headers.get("X-Telegram-Bot-Api-Secret-Token", "") != _WEBHOOK_SECRET:
