@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — Body Manual AI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 680px; margin: 3rem auto; padding: 0 1.5rem; color: #222; line-height: 1.7; }
+    h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; }
+    p, li { font-size: 0.97rem; }
+    a { color: #0969da; }
+    .updated { color: #666; font-size: 0.88rem; margin-bottom: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: June 2026</p>
+
+  <p>Body Manual AI is a personal health coaching tool. This policy explains what data is collected, how it is used, and how to delete it.</p>
+
+  <h2>Who this applies to</h2>
+  <p>This app is a private MVP used by its developer and a small number of invited users. It is not a public consumer product.</p>
+
+  <h2>What data is collected</h2>
+  <p>When you connect your WHOOP account, the app stores the following data on your behalf:</p>
+  <ul>
+    <li>WHOOP recovery score, HRV, resting heart rate, respiratory rate, SpO2, and skin temperature</li>
+    <li>Sleep duration, efficiency, performance, and consistency</li>
+    <li>Daily strain and workout activity</li>
+    <li>Your Telegram user ID and first name</li>
+    <li>Your local timezone (used to map WHOOP cycles to calendar days)</li>
+    <li>Optional: daily check-in tags you provide (e.g. "high stress", "late meal")</li>
+  </ul>
+  <p>OAuth tokens (WHOOP access and refresh tokens) are stored to maintain the connection on your behalf.</p>
+
+  <h2>How your data is used</h2>
+  <p>Your data is used solely to generate your daily coach message and personal health summary. Specifically:</p>
+  <ul>
+    <li>A structured summary of your metrics (not your raw history) is sent to <strong>OpenAI</strong> to generate your morning coach message. No raw time-series data is sent to OpenAI.</li>
+    <li>Your data is never sold, shared with advertisers, or used for cross-user analytics.</li>
+    <li>There is no pooling of data across users.</li>
+  </ul>
+
+  <h2>Third-party services</h2>
+  <ul>
+    <li><strong>WHOOP API</strong> — data source. Subject to <a href="https://www.whoop.com/privacy/">WHOOP's Privacy Policy</a>.</li>
+    <li><strong>OpenAI API</strong> — used to generate coach message text from pre-computed summaries. Subject to <a href="https://openai.com/policies/privacy-policy">OpenAI's Privacy Policy</a>.</li>
+    <li><strong>Telegram</strong> — the interface for all interactions. Subject to <a href="https://telegram.org/privacy">Telegram's Privacy Policy</a>.</li>
+  </ul>
+
+  <h2>Data retention and deletion</h2>
+  <p>Send <strong>/delete</strong> to the bot at any time. This permanently and immediately hard-deletes all of your data across every table — recovery metrics, sleep data, coach messages, journal entries, and OAuth tokens. There is no soft-delete, no archive, and no retention period. The deletion is irreversible.</p>
+
+  <h2>Data security</h2>
+  <p>All data is stored in a private PostgreSQL database. OAuth tokens are stored per-user and isolated from other users' data. Encryption at rest will be applied before the app is shared beyond the developer.</p>
+
+  <h2>Contact</h2>
+  <p>Questions? Open an issue on <a href="https://github.com/Rromanox/body-manual-ai">GitHub</a> or contact the developer directly via Telegram.</p>
+</body>
+</html>
