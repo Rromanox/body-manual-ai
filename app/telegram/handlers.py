@@ -831,31 +831,33 @@ async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "system": "⚙️",
         "error": "❌",
     }
-    lines = [f"*Chat log — last {min(limit, len(rows))} messages*\n"]
+    lines = [f"Chat log — last {min(limit, len(rows))} messages\n"]
     for row in reversed(rows):
         ts = row.created_at.strftime("%b %d %H:%M") if row.created_at else "?"
         icon = "👤" if row.direction == "in" else "🤖"
         type_tag = TYPE_EMOJI.get(row.message_type, "")
-        # Truncate long AI messages to keep the log readable
         content = row.content
         if row.direction == "out" and len(content) > 200:
             content = content[:200] + "…"
         lines.append(f"[{ts}] {icon}{type_tag} {content}")
 
-    # Telegram has a 4096 char limit — split if needed
-    text = "\n".join(lines)
-    if len(text) <= 4000:
-        await update.message.reply_text(text, parse_mode="Markdown")
-    else:
-        # Send in chunks
-        chunk: list[str] = [lines[0]]
-        for line in lines[1:]:
-            if sum(len(l) + 1 for l in chunk) + len(line) > 3800:
-                await update.message.reply_text("\n".join(chunk), parse_mode="Markdown")
-                chunk = []
-            chunk.append(line)
-        if chunk:
-            await update.message.reply_text("\n".join(chunk), parse_mode="Markdown")
+    # No parse_mode — message content can contain Markdown special chars that break the parser
+    async def _send(text: str) -> None:
+        try:
+            await update.message.reply_text(text)
+        except Exception as exc:
+            logger.exception("/chatlog send failed")
+            await update.message.reply_text(f"Send error: {type(exc).__name__}: {exc}")
+
+    # Split into chunks under Telegram's 4096 char limit
+    chunk: list[str] = []
+    for line in lines:
+        if sum(len(l) + 1 for l in chunk) + len(line) > 3800:
+            await _send("\n".join(chunk))
+            chunk = []
+        chunk.append(line)
+    if chunk:
+        await _send("\n".join(chunk))
 
 
 async def _run_observation_recalc(user_id: int) -> None:
