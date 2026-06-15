@@ -21,7 +21,9 @@ from app.models.oauth_connection import OAuthConnection
 AUTHORIZE_URL = "https://account.withings.com/oauth2_user/authorize2"
 TOKEN_URL = "https://wbsapi.withings.net/v2/oauth2"
 MEASURE_URL = "https://wbsapi.withings.net/measure"
+NOTIFY_URL = "https://wbsapi.withings.net/notify"
 SCOPES = "user.metrics"
+NOTIFY_APPLI_BODY_COMPOSITION = 1  # Weight & body composition
 REFRESH_MARGIN = timedelta(minutes=5)
 HTTP_TIMEOUT = 30.0
 
@@ -207,3 +209,51 @@ def normalize_measurements(
             row[col] = round(value, 2)
 
     return {d: {k: v for k, v in row.items() if k != "__ts"} for d, row in by_date.items()}
+
+
+def _webhook_url() -> str:
+    return f"{settings.base_url}/webhooks/withings"
+
+
+async def subscribe_notifications(access_token: str) -> None:
+    """Register our webhook with Withings for body composition updates (appli=1)."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    data = {
+        "action": "subscribe",
+        "callbackurl": _webhook_url(),
+        "appli": str(NOTIFY_APPLI_BODY_COMPOSITION),
+        "comment": "Body Manual AI",
+    }
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        response = await client.post(NOTIFY_URL, data=data, headers=headers)
+
+    if response.status_code != 200:
+        raise WithingsApiError(
+            f"Withings notify subscribe failed ({response.status_code}): {response.text}"
+        )
+    body = response.json()
+    status = body.get("status", -1)
+    if status not in (0, 294):  # 294 = already subscribed, treat as success
+        raise WithingsApiError(
+            f"Withings notify subscribe returned error status={status}: {body}"
+        )
+    logger.info("Withings notification subscription active for appli=%s", NOTIFY_APPLI_BODY_COMPOSITION)
+
+
+async def unsubscribe_notifications(access_token: str) -> None:
+    """Remove the webhook subscription — called when a connection is deleted."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    data = {
+        "action": "revoke",
+        "callbackurl": _webhook_url(),
+        "appli": str(NOTIFY_APPLI_BODY_COMPOSITION),
+    }
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        response = await client.post(NOTIFY_URL, data=data, headers=headers)
+
+    if response.status_code != 200:
+        logger.warning("Withings notify revoke returned HTTP %s", response.status_code)
+        return
+    body = response.json()
+    if body.get("status", -1) != 0:
+        logger.warning("Withings notify revoke returned status %s", body.get("status"))

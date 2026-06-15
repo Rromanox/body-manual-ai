@@ -22,6 +22,7 @@ from app.services.withings_client import (
     exchange_code,
     normalize_measurements,
     pull_body_measurements,
+    subscribe_notifications,
 )
 from app.services.whoop_client import verify_oauth_state
 from app.telegram.bot import get_application
@@ -84,9 +85,25 @@ async def _notify_and_backfill(user_id: int, telegram_id: int) -> None:
     )
     try:
         written = await pull_withings_and_store(user_id, days=BACKFILL_DAYS)
+        # Subscribe to push notifications so we get updates when user steps on scale
+        with SessionLocal() as session:
+            from sqlalchemy import select as _select
+            conn = session.scalar(
+                _select(OAuthConnection).where(
+                    OAuthConnection.user_id == user_id,
+                    OAuthConnection.provider == "withings",
+                    OAuthConnection.status == "active",
+                )
+            )
+            if conn:
+                access_token = await ensure_fresh_access_token(session, conn)
+                try:
+                    await subscribe_notifications(access_token)
+                except Exception as sub_exc:
+                    logger.warning("Withings notification subscribe failed: %s", sub_exc)
         await bot.send_message(
             chat_id=telegram_id,
-            text=f"Done — body composition loaded for {written} days. It will now appear in your /today messages.",
+            text=f"Done — body composition loaded for {written} days. I'll update automatically whenever you step on the scale.",
         )
     except Exception as exc:
         logger.exception("Post-connect Withings backfill failed for user %s", user_id)

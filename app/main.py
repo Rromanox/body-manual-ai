@@ -16,7 +16,7 @@ from telegram import BotCommand, Update
 
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_message import run_daily_message
-from app.routes import whoop_oauth, withings_oauth
+from app.routes import whoop_oauth, withings_oauth, withings_webhook
 from app.telegram.bot import build_application, get_application
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Body Manual AI", lifespan=lifespan)
 app.include_router(whoop_oauth.router)
 app.include_router(withings_oauth.router)
+app.include_router(withings_webhook.router)
 
 
 @app.get("/healthz")
