@@ -14,6 +14,9 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 from telegram import BotCommand, Update
 
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
+
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_message import run_daily_message
 from app.routes import whoop_oauth, withings_oauth, withings_webhook
@@ -25,8 +28,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 _WEBHOOK_SECRET = hashlib.sha256(settings.secret_key.encode()).hexdigest()
 
 
+def _run_migrations() -> None:
+    cfg = AlembicConfig("alembic.ini")
+    alembic_command.upgrade(cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _run_migrations()
     validate_startup_settings()
 
     application = build_application()
