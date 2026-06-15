@@ -239,3 +239,108 @@ def _consecutive_days(by_date: dict, target_date: date, predicate) -> int:
             return streak
         streak += 1
         day -= timedelta(days=1)
+
+
+# ---------------------------------------------------------------------------
+# Weekly snapshot
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WeeklySnapshot:
+    recovery: MetricSummary
+    sleep_hours: MetricSummary
+    resting_hr: MetricSummary
+    hrv: MetricSummary
+    avg_strain_7d: float | None
+    data_days_available: int
+    data_maturity: str
+
+
+def build_weekly_snapshot(session: Session, user_id: int, target_date: date) -> WeeklySnapshot:
+    yesterday = target_date - timedelta(days=1)
+    week_start = target_date - timedelta(days=7)
+    month_start = target_date - timedelta(days=30)
+
+    def _weekly(col: InstrumentedAttribute, higher_is_better: bool = True) -> MetricSummary:
+        week_avg = _avg(session, user_id, col, week_start, yesterday)
+        month_avg = _avg(session, user_id, col, month_start, yesterday)
+        flag = None
+        if week_avg is not None and month_avg is not None and month_avg != 0:
+            ratio = week_avg / month_avg
+            if higher_is_better:
+                flag = "above_baseline" if ratio > 1.1 else ("below_baseline" if ratio < 0.9 else None)
+            else:
+                flag = "elevated" if ratio > 1.1 else ("lower_than_usual" if ratio < 0.9 else None)
+        return MetricSummary(today=week_avg, baseline_7d=None, baseline_30d=month_avg, flag=flag)
+
+    return WeeklySnapshot(
+        recovery=_weekly(DailyMetric.recovery_score),
+        sleep_hours=_weekly(DailyMetric.sleep_hours),
+        resting_hr=_weekly(DailyMetric.resting_heart_rate, higher_is_better=False),
+        hrv=_weekly(DailyMetric.hrv_ms),
+        avg_strain_7d=_avg(session, user_id, DailyMetric.strain, week_start, yesterday),
+        data_days_available=_data_days_available(session, user_id, target_date),
+        data_maturity=_maturity(_data_days_available(session, user_id, target_date)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Q&A context
+# ---------------------------------------------------------------------------
+
+@dataclass
+class QAContext:
+    data_days_available: int
+    data_maturity: str
+    avg_7d: dict[str, float | None]
+    avg_30d: dict[str, float | None]
+    recent_tags: list[str]
+    observations: list[str]
+
+
+def build_qa_context(session: Session, user_id: int, target_date: date) -> QAContext:
+    from app.models.journal_entry import JournalEntry
+    from app.models.observation import Observation
+
+    yesterday = target_date - timedelta(days=1)
+    week_start = target_date - timedelta(days=7)
+    month_start = target_date - timedelta(days=30)
+
+    metric_cols = {
+        "recovery": DailyMetric.recovery_score,
+        "sleep_hours": DailyMetric.sleep_hours,
+        "hrv_ms": DailyMetric.hrv_ms,
+        "resting_hr": DailyMetric.resting_heart_rate,
+        "strain": DailyMetric.strain,
+    }
+    avg_7d = {k: _avg(session, user_id, col, week_start, yesterday) for k, col in metric_cols.items()}
+    avg_30d = {k: _avg(session, user_id, col, month_start, yesterday) for k, col in metric_cols.items()}
+
+    recent_entries = session.scalars(
+        select(JournalEntry).where(
+            JournalEntry.user_id == user_id,
+            JournalEntry.date >= week_start,
+        )
+    ).all()
+    recent_tags = list({tag for entry in recent_entries for tag in (entry.tags or [])})
+
+    obs_rows = session.scalars(
+        select(Observation)
+        .where(Observation.user_id == user_id, Observation.status != "archived")
+        .order_by(Observation.occurrence_count.desc())
+        .limit(10)
+    ).all()
+    observations = [
+        f"{o.pattern_description} Evidence: {o.supporting_count} of {o.occurrence_count} logged days."
+        for o in obs_rows
+    ]
+
+    data_days = _data_days_available(session, user_id, target_date)
+    return QAContext(
+        data_days_available=data_days,
+        data_maturity=_maturity(data_days),
+        avg_7d=avg_7d,
+        avg_30d=avg_30d,
+        recent_tags=recent_tags,
+        observations=observations,
+    )

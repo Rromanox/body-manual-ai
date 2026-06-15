@@ -1,0 +1,107 @@
+"""Scheduled morning message job.
+
+Pulls fresh WHOOP data, generates today's coach message, sends it via
+Telegram, then prompts the daily check-in for yesterday's context.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+
+from app.db import SessionLocal
+from app.jobs.daily_pull import pull_and_store
+from app.models.coach_message import CoachMessage
+from app.models.journal_entry import JournalEntry
+from app.models.oauth_connection import OAuthConnection
+from app.models.user import User
+from app.services.ai_client import generate_daily_message
+from app.services.alerts import send_admin_alert
+from app.services.baseline_engine import build_daily_snapshot, safety_message
+from app.services.coach_payload_builder import build_daily_payload
+from app.services.whoop_client import WhoopAuthError
+from app.telegram.bot import get_application
+from app.telegram.keyboards import checkin_keyboard
+
+logger = logging.getLogger(__name__)
+
+
+async def run_daily_message() -> None:
+    """Send the morning coach message to every user with an active WHOOP connection."""
+    with SessionLocal() as session:
+        user_ids = [
+            c.user_id
+            for c in session.scalars(
+                select(OAuthConnection).where(
+                    OAuthConnection.provider == "whoop", OAuthConnection.status == "active"
+                )
+            ).all()
+        ]
+
+    results = await asyncio.gather(*[_send_for_user(uid) for uid in user_ids], return_exceptions=True)
+    for uid, result in zip(user_ids, results):
+        if isinstance(result, Exception):
+            logger.exception("Morning message unhandled exception for user %s", uid, exc_info=result)
+            await send_admin_alert(f"Morning message unhandled exception for user {uid}: {result}")
+
+
+async def _send_for_user(user_id: int) -> None:
+    bot = get_application().bot
+    with SessionLocal() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            return
+
+        try:
+            await pull_and_store(session, user, days=7)
+        except WhoopAuthError as exc:
+            await send_admin_alert(f"WHOOP auth expired for user {user_id} during morning pull: {exc}")
+            return
+        except Exception as exc:
+            logger.exception("Morning pull failed for user %s", user_id)
+            await send_admin_alert(f"Morning pull failed for user {user_id}: {exc}")
+            return
+
+        target_date = datetime.now(ZoneInfo(user.timezone)).date()
+        yesterday = target_date - timedelta(days=1)
+        snapshot = build_daily_snapshot(session, user.id, target_date)
+
+        yesterday_entry = session.scalar(
+            select(JournalEntry).where(
+                JournalEntry.user_id == user.id,
+                JournalEntry.date == yesterday,
+            )
+        )
+        yesterday_tags = list(yesterday_entry.tags or []) if yesterday_entry else []
+        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags)
+
+        try:
+            message_text = await generate_daily_message(payload)
+        except Exception as exc:
+            logger.exception("Morning AI call failed for user %s", user_id)
+            await send_admin_alert(f"Morning AI call failed for user {user_id}: {exc}")
+            return
+
+        caution = safety_message(snapshot.safety_triggers)
+        if caution:
+            message_text = f"{message_text}\n\n{caution}"
+
+        session.add(CoachMessage(
+            user_id=user.id,
+            date=target_date,
+            message_type="daily",
+            summary_payload=payload,
+            ai_response=message_text,
+        ))
+        session.commit()
+        telegram_id = user.telegram_id
+
+    await bot.send_message(chat_id=telegram_id, text=message_text)
+    await bot.send_message(
+        chat_id=telegram_id,
+        text=f"How was yesterday? Tap any that apply:",
+        reply_markup=checkin_keyboard(set()),
+    )

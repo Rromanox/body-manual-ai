@@ -153,6 +153,22 @@ FEW_SHOTS: list[dict[str, str]] = [
     },
 ]
 
+WEEKLY_SYSTEM_PROMPT = """\
+You are a personal health coach giving a weekly check-in summary.
+You receive a JSON payload with the user's 7-day averages vs their 30-day baselines.
+Give a short, honest weekly summary: what trended well, what trended down, and one clear focus for the week ahead.
+3-5 sentences. Same rules as the daily message: no diagnosis, hedged language, personal baseline comparisons only.
+Vary your structure. Do not make it sound like a template."""
+
+QA_SYSTEM_PROMPT = """\
+You are a personal health coach who knows one user's body well from months of WHOOP data.
+You receive a JSON payload with their health data context and their question.
+Answer their question conversationally based only on the data provided.
+Be honest about what the data can and cannot tell you.
+Same hard rules: no diagnosis, no medications, no certainty from weak evidence, hedged language.
+Keep answers concise — 2-4 sentences unless the question genuinely needs more.
+If the data is too limited to answer well, say so honestly."""
+
 _client: AsyncOpenAI | None = None
 
 
@@ -165,6 +181,32 @@ def _get_client() -> AsyncOpenAI:
             )
         _client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=REQUEST_TIMEOUT)
     return _client
+
+
+async def generate_weekly_message(payload: dict[str, Any]) -> str:
+    response = await _get_client().responses.create(
+        model=settings.openai_model,
+        instructions=WEEKLY_SYSTEM_PROMPT,
+        input=[{"role": "user", "content": json.dumps(payload)}],
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+    )
+    text = (response.output_text or "").strip()
+    if not text:
+        raise RuntimeError("OpenAI returned no text for weekly message")
+    return text
+
+
+async def generate_qa_response(payload: dict[str, Any]) -> str:
+    response = await _get_client().responses.create(
+        model=settings.openai_model,
+        instructions=QA_SYSTEM_PROMPT,
+        input=[{"role": "user", "content": json.dumps(payload)}],
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+    )
+    text = (response.output_text or "").strip()
+    if not text:
+        raise RuntimeError("OpenAI returned no text for Q&A response")
+    return text
 
 
 async def generate_daily_message(payload: dict[str, Any]) -> str:

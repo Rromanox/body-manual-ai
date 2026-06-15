@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from telegram import BotCommand, Update
 
 from app.config import settings, validate_startup_settings
-from app.jobs.daily_pull import run_daily_pull
+from app.jobs.daily_message import run_daily_message
 from app.routes import whoop_oauth
 from app.telegram.bot import build_application, get_application
 
@@ -39,17 +39,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await application.bot.set_my_commands([
         BotCommand("today", "Get your coach message for today"),
+        BotCommand("checkin", "Log what happened yesterday"),
+        BotCommand("weekly", "This week's summary"),
+        BotCommand("manual", "Your personal body manual"),
         BotCommand("connect_whoop", "Connect your WHOOP account"),
         BotCommand("backfill", "Re-pull 365 days of WHOOP data"),
+        BotCommand("delete", "Permanently delete all your data"),
         BotCommand("start", "Set up your account"),
     ])
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.default_timezone))
     scheduler.add_job(
-        run_daily_pull,
+        run_daily_message,
         CronTrigger(hour=settings.daily_pull_hour, minute=0),
-        id="daily_whoop_pull",
+        id="daily_morning_message",
     )
     scheduler.start()
 

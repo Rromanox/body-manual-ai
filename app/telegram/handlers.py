@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import delete as sql_delete, select
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
@@ -13,17 +13,21 @@ from app.config import settings
 from app.db import SessionLocal
 from app.jobs.daily_pull import pull_and_store
 from app.models.coach_message import CoachMessage
+from app.models.journal_entry import JournalEntry
 from app.models.oauth_connection import OAuthConnection
+from app.models.observation import Observation
 from app.models.user import User
-from app.services.ai_client import generate_daily_message
+from app.services.ai_client import generate_daily_message, generate_qa_response, generate_weekly_message
 from app.services.alerts import send_admin_alert
-from app.services.baseline_engine import build_daily_snapshot, safety_message
-from app.services.coach_payload_builder import build_daily_payload
-from app.services.whoop_client import (
-    WhoopAuthError,
-    build_authorize_url,
-    make_oauth_state,
+from app.services.baseline_engine import (
+    build_daily_snapshot,
+    build_qa_context,
+    build_weekly_snapshot,
+    safety_message,
 )
+from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
+from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
+from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user.username = tg_user.username
         session.commit()
     await update.message.reply_text(CONSENT_MESSAGE.format(name=tg_user.first_name or "there"))
+
 
 
 async def connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -88,7 +93,6 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         try:
-            # Pull at send time: WHOOP recovery often finalizes around wake-up
             await pull_and_store(session, user, days=7)
         except WhoopAuthError as exc:
             await send_admin_alert(f"WHOOP auth failed for user {user.id} during /today: {exc}")
@@ -100,13 +104,21 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.exception("/today pull failed for user %s", user.id)
             await send_admin_alert(f"/today pull failed for user {user.id}: {exc}")
             await update.message.reply_text(
-                "I couldn't pull your latest WHOOP data just now — I've flagged it and will look into it."
+                "I couldn't pull your latest WHOOP data just now — I've flagged it."
             )
             return
 
         target_date = _today_local(user)
+        yesterday = target_date - timedelta(days=1)
         snapshot = build_daily_snapshot(session, user.id, target_date)
-        payload = build_daily_payload(user, snapshot)
+        yesterday_entry = session.scalar(
+            select(JournalEntry).where(
+                JournalEntry.user_id == user.id,
+                JournalEntry.date == yesterday,
+            )
+        )
+        yesterday_tags = list(yesterday_entry.tags or []) if yesterday_entry else []
+        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags)
 
         try:
             message_text = await generate_daily_message(payload)
@@ -134,6 +146,219 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         session.commit()
 
     await update.message.reply_text(message_text)
+
+
+async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        yesterday = _today_local(user) - timedelta(days=1)
+        entry = session.scalar(
+            select(JournalEntry).where(
+                JournalEntry.user_id == user.id, JournalEntry.date == yesterday
+            )
+        )
+        selected = set(entry.tags or []) if entry else set()
+
+    await update.message.reply_text(
+        f"How was yesterday ({yesterday.strftime('%A, %b %d')})? Tap any that apply:",
+        reply_markup=checkin_keyboard(selected),
+    )
+
+
+async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    telegram_id = query.from_user.id
+
+    reply_text: str | None = None
+    new_keyboard = None
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            return
+        yesterday = _today_local(user) - timedelta(days=1)
+        entry = session.scalar(
+            select(JournalEntry).where(
+                JournalEntry.user_id == user.id, JournalEntry.date == yesterday
+            )
+        )
+
+        if data in ("ci_done", "ci_feel_skip"):
+            tags = list(entry.tags or []) if entry else []
+            reply_text = f"Saved ✓ — {', '.join(tags) if tags else 'nothing notable yesterday'}."
+
+        elif data == "ci_none":
+            if entry is None:
+                entry = JournalEntry(user_id=user.id, date=yesterday, tags=[])
+                session.add(entry)
+            entry.tags = []
+            session.commit()
+            reply_text = "Saved ✓ — nothing notable yesterday."
+
+        elif data.startswith("ci_feel:"):
+            feel = int(data.split(":")[1])
+            if entry is None:
+                entry = JournalEntry(user_id=user.id, date=yesterday, tags=[])
+                session.add(entry)
+            entry.feel_score = feel
+            session.commit()
+            reply_text = f"Saved ✓ — feel score {feel}/5."
+
+        elif data.startswith("ci_tag:"):
+            tag = data.split(":")[1]
+            if entry is None:
+                entry = JournalEntry(user_id=user.id, date=yesterday, tags=[])
+                session.add(entry)
+            current = list(entry.tags or [])
+            if tag in current:
+                current.remove(tag)
+            else:
+                current.append(tag)
+            entry.tags = current
+            session.commit()
+            new_keyboard = checkin_keyboard(set(current))
+
+    if reply_text:
+        await query.edit_message_text(reply_text)
+    elif new_keyboard:
+        await query.edit_message_reply_markup(reply_markup=new_keyboard)
+
+
+async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        if not _has_active_whoop(session, user.id):
+            await update.message.reply_text("Connect your WHOOP first with /connect_whoop.")
+            return
+
+        target_date = _today_local(user)
+        snapshot = build_weekly_snapshot(session, user.id, target_date)
+        payload = build_weekly_payload(user, snapshot)
+
+        try:
+            message_text = await generate_weekly_message(payload)
+        except Exception as exc:
+            logger.exception("/weekly AI call failed for user %s", user.id)
+            await send_admin_alert(f"/weekly AI call failed for user {user.id}: {exc}")
+            await update.message.reply_text("I couldn't generate the weekly summary — I've flagged it.")
+            return
+
+        session.add(CoachMessage(
+            user_id=user.id,
+            date=target_date,
+            message_type="weekly",
+            summary_payload=payload,
+            ai_response=message_text,
+        ))
+        session.commit()
+
+    await update.message.reply_text(message_text)
+
+
+async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+
+        observations = session.scalars(
+            select(Observation)
+            .where(Observation.user_id == user.id, Observation.status != "archived")
+            .order_by(Observation.occurrence_count.desc())
+        ).all()
+        name = user.first_name or "Your"
+
+    lines = [f"*{name}'s Body Manual*\n"]
+
+    if not observations:
+        lines.append(
+            "_Still building your manual — I need check-in data over several weeks to start "
+            "spotting patterns. Use /checkin each morning to help me learn._"
+        )
+    else:
+        stronger = [o for o in observations if o.status == "stronger_signal"]
+        promising = [o for o in observations if o.status == "promising"]
+        watching = [o for o in observations if o.status in ("watching", "weak")]
+
+        if stronger:
+            lines.append("*Stronger Signals:*")
+            for o in stronger:
+                lines.append(
+                    f"• {o.pattern_description}\n  Evidence: {o.supporting_count} of {o.occurrence_count} logged days."
+                )
+        if promising:
+            lines.append("\n*Emerging Patterns:*")
+            for o in promising:
+                lines.append(
+                    f"• {o.pattern_description}\n  Evidence: {o.supporting_count} of {o.occurrence_count} logged days. Early signal."
+                )
+        if watching:
+            lines.append("\n*Watching:*")
+            for o in watching:
+                lines.append(
+                    f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days so far."
+                )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    await update.message.reply_text(
+        "⚠️ This will permanently delete all your data — recovery metrics, sleep data, "
+        "coach messages, journal entries, and WHOOP tokens. There is no undo.\n\nAre you sure?",
+        reply_markup=confirm_delete_keyboard(),
+    )
+
+
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    telegram_id = query.from_user.id
+
+    if data == "del_cancel":
+        await query.edit_message_text("Cancelled — your data is safe.")
+        return
+
+    if data == "del_confirm":
+        with SessionLocal() as session:
+            user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+            if user:
+                session.execute(sql_delete(User).where(User.id == user.id))
+                session.commit()
+        await query.edit_message_text(
+            "Done — all your data has been permanently deleted. "
+            "Send /start if you ever want to begin again."
+        )
 
 
 async def backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -171,12 +396,74 @@ async def backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message is None:
+    """Any non-command message is a question to the coach."""
+    if update.message is None or update.effective_user is None:
         return
-    await update.message.reply_text(
-        "I can't answer questions quite yet — that's coming soon. For now, /today gets you your coach message."
-    )
+    question = (update.message.text or "").strip()
+    if not question:
+        return
+    telegram_id = update.effective_user.id
+    await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        if not _has_active_whoop(session, user.id):
+            await update.message.reply_text(
+                "I need your WHOOP data to answer questions — connect with /connect_whoop first."
+            )
+            return
+
+        target_date = _today_local(user)
+        qa_ctx = build_qa_context(session, user.id, target_date)
+        payload = build_qa_payload(question, qa_ctx)
+        user_id = user.id
+
+        session.add(CoachMessage(
+            user_id=user.id,
+            date=target_date,
+            message_type="q_and_a",
+            summary_payload=payload,
+            ai_response="",
+        ))
+        session.commit()
+        msg_id = session.scalars(
+            select(CoachMessage.id).where(
+                CoachMessage.user_id == user_id,
+                CoachMessage.message_type == "q_and_a",
+            ).order_by(CoachMessage.id.desc()).limit(1)
+        ).first()
+
+    try:
+        response_text = await generate_qa_response(payload)
+    except Exception as exc:
+        logger.exception("Q&A call failed for user %s", user_id)
+        await send_admin_alert(f"Q&A call failed for user {user_id}: {exc}")
+        await update.message.reply_text("I hit a snag answering that — try again in a moment.")
+        return
+
+    if msg_id:
+        with SessionLocal() as session:
+            msg = session.get(CoachMessage, msg_id)
+            if msg:
+                msg.ai_response = response_text
+                session.commit()
+
+    await update.message.reply_text(response_text)
 
 
 def _today_local(user: User) -> date:
     return datetime.now(ZoneInfo(user.timezone)).date()
+
+
+def _has_active_whoop(session, user_id: int) -> bool:
+    conn = session.scalar(
+        select(OAuthConnection).where(
+            OAuthConnection.user_id == user_id,
+            OAuthConnection.provider == "whoop",
+            OAuthConnection.status == "active",
+        )
+    )
+    return conn is not None

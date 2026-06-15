@@ -9,10 +9,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.user import User
-from app.services.baseline_engine import DailySnapshot, MetricSummary
+from app.services.baseline_engine import DailySnapshot, MetricSummary, QAContext, WeeklySnapshot
 
 
-def build_daily_payload(user: User, snapshot: DailySnapshot) -> dict[str, Any]:
+def build_daily_payload(
+    user: User, snapshot: DailySnapshot, yesterday_tags: list[str] | None = None
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "user_goal": user.goal or "general_health",
         "data_days_available": snapshot.data_days_available,
@@ -35,7 +37,51 @@ def build_daily_payload(user: User, snapshot: DailySnapshot) -> dict[str, Any]:
             "count": snapshot.yesterday_workout_count,
             "minutes": _round1(snapshot.yesterday_workout_minutes),
         }
+    if yesterday_tags:
+        payload["yesterday_tags"] = yesterday_tags
     return payload
+
+
+def build_weekly_payload(user: User, snapshot: WeeklySnapshot) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "user_goal": user.goal or "general_health",
+        "period_days": 7,
+        "data_days_available": snapshot.data_days_available,
+        "data_maturity": snapshot.data_maturity,
+    }
+    for key, summary in (
+        ("recovery", snapshot.recovery),
+        ("sleep_hours", snapshot.sleep_hours),
+        ("resting_hr", snapshot.resting_hr),
+        ("hrv", snapshot.hrv),
+    ):
+        if summary.today is not None or summary.baseline_30d is not None:
+            block: dict[str, Any] = {}
+            if summary.today is not None:
+                block["this_week_avg"] = _round1(summary.today)
+            if summary.baseline_30d is not None:
+                block["baseline_30d"] = _round1(summary.baseline_30d)
+            if summary.flag:
+                block["trend"] = summary.flag
+            payload[key] = block
+    if snapshot.avg_strain_7d is not None:
+        payload["avg_strain_7d"] = _round1(snapshot.avg_strain_7d)
+    return payload
+
+
+def build_qa_payload(question: str, context: QAContext) -> dict[str, Any]:
+    def _r(v: float | None) -> float | None:
+        return round(v, 1) if v is not None else None
+
+    return {
+        "question": question,
+        "data_days_available": context.data_days_available,
+        "data_maturity": context.data_maturity,
+        "averages_last_7_days": {k: _r(v) for k, v in context.avg_7d.items()},
+        "averages_last_30_days": {k: _r(v) for k, v in context.avg_30d.items()},
+        "recent_tags_last_7_days": context.recent_tags,
+        "observations": context.observations,
+    }
 
 
 def _metric_block(summary: MetricSummary) -> dict[str, Any] | None:
