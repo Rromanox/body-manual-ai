@@ -309,6 +309,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
     week_start = target_date - timedelta(days=7)
     month_start = target_date - timedelta(days=30)
 
+    kg_to_lbs = lambda v: round(v * 2.20462, 1) if v is not None else None  # noqa: E731
     metric_cols = {
         "recovery": DailyMetric.recovery_score,
         "sleep_hours": DailyMetric.sleep_hours,
@@ -317,12 +318,17 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         "strain": DailyMetric.strain,
         "rem_sleep_hours": DailyMetric.rem_sleep_hours,
         "deep_sleep_hours": DailyMetric.deep_sleep_hours,
-        "weight_kg": DailyMetric.weight,
         "body_fat_pct": DailyMetric.body_fat_pct,
-        "muscle_mass_kg": DailyMetric.muscle_mass,
+    }
+    mass_cols = {
+        "weight_lbs": DailyMetric.weight,
+        "muscle_mass_lbs": DailyMetric.muscle_mass,
     }
     avg_7d = {k: _avg(session, user_id, col, week_start, yesterday) for k, col in metric_cols.items()}
     avg_30d = {k: _avg(session, user_id, col, month_start, yesterday) for k, col in metric_cols.items()}
+    for k, col in mass_cols.items():
+        avg_7d[k] = kg_to_lbs(_avg(session, user_id, col, week_start, yesterday))
+        avg_30d[k] = kg_to_lbs(_avg(session, user_id, col, month_start, yesterday))
 
     recent_entries = session.scalars(
         select(JournalEntry).where(

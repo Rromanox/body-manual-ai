@@ -58,17 +58,17 @@ def build_daily_payload(
                 payload.setdefault("sleep_stages", {})[stage_key] = _round1(val)
         body_comp: dict[str, Any] = {}
         if today_metric_row.weight is not None:
-            body_comp["weight_kg"] = _round1(today_metric_row.weight)
+            body_comp["weight_lbs"] = _round1(_kg_to_lbs(today_metric_row.weight))
         if today_metric_row.body_fat_pct is not None:
             body_comp["body_fat_pct"] = _round1(today_metric_row.body_fat_pct)
         if today_metric_row.muscle_mass is not None:
-            body_comp["muscle_mass_kg"] = _round1(today_metric_row.muscle_mass)
+            body_comp["muscle_mass_lbs"] = _round1(_kg_to_lbs(today_metric_row.muscle_mass))
         if today_metric_row.fat_free_mass is not None:
-            body_comp["fat_free_mass_kg"] = _round1(today_metric_row.fat_free_mass)
+            body_comp["fat_free_mass_lbs"] = _round1(_kg_to_lbs(today_metric_row.fat_free_mass))
         if today_metric_row.water_pct is not None:
             body_comp["hydration_pct"] = _round1(today_metric_row.water_pct)
         if today_metric_row.bone_mass is not None:
-            body_comp["bone_mass_kg"] = _round1(today_metric_row.bone_mass)
+            body_comp["bone_mass_lbs"] = _round1(_kg_to_lbs(today_metric_row.bone_mass))
         if body_comp:
             payload["body_composition"] = body_comp
     return payload
@@ -136,3 +136,7 @@ def _metric_block(summary: MetricSummary) -> dict[str, Any] | None:
 
 def _round1(value: float | None) -> float | None:
     return round(value, 1) if value is not None else None
+
+
+def _kg_to_lbs(kg: float) -> float:
+    return kg * 2.20462
