@@ -47,17 +47,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         drop_pending_updates=True,
     )
     await application.bot.set_my_commands([
+        # Daily use
         BotCommand("today", "Get your coach message for today"),
         BotCommand("checkin", "Log what happened yesterday"),
-        BotCommand("weekly", "This week's summary"),
         BotCommand("focus", "One action item for this week"),
-        BotCommand("manual", "Your personal body manual"),
+        BotCommand("weekly", "This week's summary"),
+        # Review & track
+        BotCommand("manual", "Your personal body manual & patterns"),
         BotCommand("history", "Last 7 daily messages"),
+        BotCommand("chatlog", "Full chat history for review"),
         BotCommand("experiment", "Start or check an experiment"),
+        # Account & setup
         BotCommand("goal", "View or change your coaching goal"),
         BotCommand("connect_whoop", "Connect your WHOOP account"),
         BotCommand("connect_withings", "Connect your Withings scale"),
-        BotCommand("backfill", "Re-pull 365 days of WHOOP data"),
+        BotCommand("backfill", "Re-pull 365 days of WHOOP + Withings data"),
         BotCommand("delete", "Permanently delete all your data"),
         BotCommand("start", "Set up your account"),
     ])
