@@ -314,6 +314,8 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         "hrv_ms": DailyMetric.hrv_ms,
         "resting_hr": DailyMetric.resting_heart_rate,
         "strain": DailyMetric.strain,
+        "rem_sleep_hours": DailyMetric.rem_sleep_hours,
+        "deep_sleep_hours": DailyMetric.deep_sleep_hours,
         "weight_kg": DailyMetric.weight,
         "body_fat_pct": DailyMetric.body_fat_pct,
         "muscle_mass_kg": DailyMetric.muscle_mass,

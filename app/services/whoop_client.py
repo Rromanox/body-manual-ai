@@ -24,7 +24,7 @@ AUTHORIZE_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 API_BASE_URL = "https://api.prod.whoop.com/developer"
 # offline is what grants refresh tokens — request these five scopes and nothing else
-SCOPES = "offline read:cycles read:recovery read:sleep read:workout read:body_measurement"
+SCOPES = "offline read:cycles read:recovery read:sleep read:workout read:body_measurement read:profile"
 PAGE_LIMIT = 25
 REFRESH_MARGIN = timedelta(minutes=5)
 STATE_TTL_SECONDS = 600

@@ -26,10 +26,15 @@ WHOOP_METRIC_FIELDS = (
     "respiratory_rate",
     "spo2",
     "skin_temp",
+    "sleep_start_local",
+    "sleep_end_local",
     "sleep_hours",
     "sleep_efficiency",
     "sleep_performance",
     "sleep_consistency",
+    "rem_sleep_hours",
+    "deep_sleep_hours",
+    "light_sleep_hours",
     "strain",
     "workout_count",
     "total_workout_minutes",
@@ -46,10 +51,15 @@ class DailyRow:
     respiratory_rate: float | None = None
     spo2: float | None = None
     skin_temp: float | None = None
+    sleep_start_local: str | None = None   # "HH:MM" local time the user went to bed
+    sleep_end_local: str | None = None     # "HH:MM" local time the user woke up
     sleep_hours: float | None = None
     sleep_efficiency: float | None = None
     sleep_performance: float | None = None
     sleep_consistency: float | None = None
+    rem_sleep_hours: float | None = None
+    deep_sleep_hours: float | None = None
+    light_sleep_hours: float | None = None
     strain: float | None = None
     workout_count: int | None = None
     total_workout_minutes: float | None = None
@@ -97,11 +107,16 @@ def normalize_whoop_data(
         if day in chosen_sleep_milli and duration_milli <= chosen_sleep_milli[day]:
             continue
         chosen_sleep_milli[day] = duration_milli
+        row.sleep_start_local = _local_time_str(sleep.get("start"), tz)
+        row.sleep_end_local = _local_time_str(sleep.get("end"), tz)
         row.sleep_hours = _asleep_hours(score)
         row.sleep_efficiency = score.get("sleep_efficiency_percentage")
         row.sleep_performance = score.get("sleep_performance_percentage")
         row.sleep_consistency = score.get("sleep_consistency_percentage")
         row.respiratory_rate = score.get("respiratory_rate")
+        row.rem_sleep_hours = _stage_hours(score, "total_rem_sleep_time_milli")
+        row.deep_sleep_hours = _stage_hours(score, "total_slow_wave_sleep_time_milli")
+        row.light_sleep_hours = _stage_hours(score, "total_light_sleep_time_milli")
 
     for recovery in recoveries:
         sleep = sleeps_by_id.get(recovery.get("sleep_id"))
@@ -164,6 +179,19 @@ def _sleep_duration_milli(sleep: dict[str, Any], score: dict[str, Any]) -> int:
         return int(in_bed)
     delta = parse_whoop_timestamp(sleep["end"]) - parse_whoop_timestamp(sleep["start"])
     return int(delta.total_seconds() * 1000)
+
+
+def _local_time_str(timestamp: str | None, tz: ZoneInfo) -> str | None:
+    """Convert a WHOOP ISO timestamp to local 'HH:MM' string."""
+    if not timestamp:
+        return None
+    return parse_whoop_timestamp(timestamp).astimezone(tz).strftime("%H:%M")
+
+
+def _stage_hours(score: dict[str, Any], key: str) -> float | None:
+    stage_summary = score.get("stage_summary") or {}
+    milli = stage_summary.get(key)
+    return round(milli / MILLI_PER_HOUR, 2) if milli is not None else None
 
 
 def _asleep_hours(score: dict[str, Any]) -> float | None:

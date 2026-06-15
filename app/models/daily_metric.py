@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,10 +27,15 @@ class DailyMetric(Base):
     respiratory_rate: Mapped[float | None] = mapped_column(Float)
     spo2: Mapped[float | None] = mapped_column(Float)
     skin_temp: Mapped[float | None] = mapped_column(Float)
+    sleep_start_local: Mapped[str | None] = mapped_column(String(8))   # "HH:MM" local time
+    sleep_end_local: Mapped[str | None] = mapped_column(String(8))     # "HH:MM" local time
     sleep_hours: Mapped[float | None] = mapped_column(Float)
     sleep_efficiency: Mapped[float | None] = mapped_column(Float)
     sleep_performance: Mapped[float | None] = mapped_column(Float)
     sleep_consistency: Mapped[float | None] = mapped_column(Float)
+    rem_sleep_hours: Mapped[float | None] = mapped_column(Float)
+    deep_sleep_hours: Mapped[float | None] = mapped_column(Float)
+    light_sleep_hours: Mapped[float | None] = mapped_column(Float)
     strain: Mapped[float | None] = mapped_column(Float)
     workout_count: Mapped[int | None] = mapped_column(Integer)
     total_workout_minutes: Mapped[float | None] = mapped_column(Float)

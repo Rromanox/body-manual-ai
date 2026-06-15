@@ -44,6 +44,18 @@ def build_daily_payload(
     if yesterday_tags:
         payload["yesterday_tags"] = yesterday_tags
     if today_metric_row is not None:
+        if today_metric_row.sleep_start_local:
+            payload["sleep_start"] = today_metric_row.sleep_start_local
+        if today_metric_row.sleep_end_local:
+            payload["sleep_end"] = today_metric_row.sleep_end_local
+        for stage_key, col in (
+            ("rem_hours", "rem_sleep_hours"),
+            ("deep_hours", "deep_sleep_hours"),
+            ("light_hours", "light_sleep_hours"),
+        ):
+            val = getattr(today_metric_row, col, None)
+            if val is not None:
+                payload.setdefault("sleep_stages", {})[stage_key] = _round1(val)
         body_comp: dict[str, Any] = {}
         if today_metric_row.weight is not None:
             body_comp["weight_kg"] = _round1(today_metric_row.weight)
