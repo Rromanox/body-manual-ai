@@ -22,6 +22,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("goal", handlers.goal))
     application.add_handler(CommandHandler("history", handlers.history))
     application.add_handler(CommandHandler("focus", handlers.focus))
+    application.add_handler(CommandHandler("experiment", handlers.experiment))
     application.add_handler(CommandHandler("backfill", handlers.backfill))
     application.add_handler(CommandHandler("delete", handlers.delete))
 

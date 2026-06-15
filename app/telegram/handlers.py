@@ -30,6 +30,14 @@ from app.services.baseline_engine import (
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.observation_engine import recalculate_observations
+from app.services.experiment_engine import (
+    end_experiment,
+    format_experiment_text,
+    get_experiment_summaries,
+    infer_metrics,
+    METRIC_META,
+    start_experiment,
+)
 from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
 from app.services.withings_client import build_authorize_url as withings_authorize_url
 from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard, goal_keyboard
@@ -498,7 +506,109 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days so far."
                 )
 
+    # Experiments section
+    target_date_for_exp = _today_local(user)
+    with SessionLocal() as esession:
+        exp_summaries = get_experiment_summaries(esession, user.id, target_date_for_exp)
+    if exp_summaries:
+        lines.append("\n*Experiments*")
+        for s in exp_summaries:
+            lines.append(format_experiment_text(s))
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def experiment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /experiment               — show active experiments
+    /experiment <name>        — start a new experiment
+    /experiment end           — end the most recent active experiment
+    /experiment end <partial> — end experiment whose name contains <partial>
+    /experiment list          — list all experiments including completed
+    """
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    args = context.args or []
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+
+        from app.models.experiment import Experiment as _Exp
+
+        target_date = _today_local(user)
+
+        # --- /experiment end [partial name] ---
+        if args and args[0].lower() == "end":
+            partial = " ".join(args[1:]).lower()
+            active = session.scalars(
+                select(_Exp).where(_Exp.user_id == user.id, _Exp.status == "active")
+                .order_by(_Exp.start_date.desc())
+            ).all()
+            if not active:
+                await update.message.reply_text("No active experiments to end.")
+                return
+            target_exp = next(
+                (e for e in active if partial in e.name.lower()), active[0]
+            ) if partial else active[0]
+            end_experiment(session, target_exp, target_date)
+            await update.message.reply_text(
+                f"Ended *{target_exp.name}* after {(target_date - target_exp.start_date).days + 1} days.\n"
+                "Results are in /manual under Experiments.",
+                parse_mode="Markdown",
+            )
+            return
+
+        # --- /experiment list ---
+        if args and args[0].lower() == "list":
+            summaries = get_experiment_summaries(session, user.id, target_date)
+            if not summaries:
+                await update.message.reply_text(
+                    "No experiments yet. Start one with /experiment <name>, e.g.\n"
+                    "/experiment Cutting alcohol"
+                )
+                return
+            parts = [format_experiment_text(s) for s in summaries]
+            await update.message.reply_text("\n\n".join(parts), parse_mode="Markdown")
+            return
+
+        # --- /experiment (no args) → show active ---
+        if not args:
+            active = get_experiment_summaries(session, user.id, target_date)
+            active = [s for s in active if s["status"] == "active"]
+            if not active:
+                await update.message.reply_text(
+                    "No active experiments.\n\n"
+                    "Start one with /experiment <name>, e.g.:\n"
+                    "• /experiment Cutting alcohol\n"
+                    "• /experiment Earlier bedtime\n"
+                    "• /experiment Intermittent fasting\n\n"
+                    "I'll auto-select which metrics to track based on the name, "
+                    "and compare them to your 14-day baseline."
+                )
+            else:
+                parts = [format_experiment_text(s) for s in active]
+                parts.append("\nEnd one with /experiment end")
+                await update.message.reply_text("\n\n".join(parts), parse_mode="Markdown")
+            return
+
+        # --- /experiment <name> → start new ---
+        name = " ".join(args)
+        metrics = infer_metrics(name)
+        metric_labels = [METRIC_META.get(m, (m, True))[0] for m in metrics]
+
+        exp = start_experiment(session, user.id, name, target_date, metrics)
+        await update.message.reply_text(
+            f"Started *{name}* — Day 1.\n\n"
+            f"Tracking: {', '.join(metric_labels)}\n"
+            f"Baseline: your last 14 days before today.\n\n"
+            "I'll compare your metrics from today forward. "
+            "Check progress anytime with /experiment or in /manual.",
+            parse_mode="Markdown",
+        )
 
 
 async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
