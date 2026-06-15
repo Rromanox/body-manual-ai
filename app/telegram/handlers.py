@@ -19,19 +19,20 @@ from app.models.journal_entry import JournalEntry
 from app.models.oauth_connection import OAuthConnection
 from app.models.observation import Observation
 from app.models.user import User
-from app.services.ai_client import generate_daily_message, generate_qa_response, generate_weekly_message
+from app.services.ai_client import generate_daily_message, generate_focus_response, generate_qa_response, generate_weekly_message
 from app.services.alerts import send_admin_alert
 from app.services.baseline_engine import (
     build_daily_snapshot,
     build_qa_context,
     build_weekly_snapshot,
+    get_checkin_streak,
     safety_message,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.observation_engine import recalculate_observations
 from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
 from app.services.withings_client import build_authorize_url as withings_authorize_url
-from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard
+from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard, goal_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,11 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 DailyMetric.user_id == user.id, DailyMetric.date == target_date
             )
         )
-        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags, today_metric_row=today_row)
+        streak = get_checkin_streak(session, user.id, target_date)
+        payload = build_daily_payload(
+            user, snapshot, yesterday_tags=yesterday_tags,
+            today_metric_row=today_row, checkin_streak=streak,
+        )
 
         try:
             message_text = await generate_daily_message(payload)
@@ -321,6 +326,95 @@ async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message_text)
 
 
+async def goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == update.effective_user.id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        current = user.goal or "general_health"
+    labels = {"general_health": "General health", "performance": "Performance", "weight_loss": "Weight loss"}
+    await update.message.reply_text(
+        f"Current goal: {labels.get(current, current)}\n\nChoose a new goal:",
+        reply_markup=goal_keyboard(current),
+    )
+
+
+async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+    await query.answer()
+    new_goal = (query.data or "").replace("goal:", "")
+    if new_goal not in ("general_health", "performance", "weight_loss"):
+        return
+    labels = {"general_health": "General health", "performance": "Performance", "weight_loss": "Weight loss"}
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == query.from_user.id))
+        if user is None:
+            return
+        user.goal = new_goal
+        session.commit()
+    await query.edit_message_text(f"Goal updated to: {labels[new_goal]}. Your morning messages will reflect this.")
+
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == update.effective_user.id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        rows = session.scalars(
+            select(CoachMessage)
+            .where(CoachMessage.user_id == user.id, CoachMessage.message_type == "daily")
+            .order_by(CoachMessage.date.desc())
+            .limit(7)
+        ).all()
+
+    if not rows:
+        await update.message.reply_text("No daily messages yet — run /today to get your first one.")
+        return
+
+    parts = []
+    for row in rows:
+        date_str = row.date.strftime("%a, %b %d") if row.date else "Unknown date"
+        parts.append(f"*{date_str}*\n{row.ai_response}")
+    await update.message.reply_text("\n\n---\n\n".join(parts), parse_mode="Markdown")
+
+
+async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        if not _has_active_whoop(session, user.id):
+            await update.message.reply_text("Connect your WHOOP first with /connect_whoop.")
+            return
+        target_date = _today_local(user)
+        snapshot = build_weekly_snapshot(session, user.id, target_date)
+        payload = build_weekly_payload(user, snapshot)
+
+    try:
+        text = await generate_focus_response(payload)
+    except Exception as exc:
+        logger.exception("/focus AI call failed for user %s", telegram_id)
+        await send_admin_alert(f"/focus AI call failed for user {telegram_id}: {exc}")
+        await update.message.reply_text("Couldn't generate a focus right now — try again in a moment.")
+        return
+
+    await update.message.reply_text(text)
+
+
 async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
@@ -342,10 +436,44 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [f"*{name}'s Body Manual*\n"]
 
     if not observations:
-        lines.append(
-            "_Still building your manual — I need check-in data over several weeks to start "
-            "spotting patterns. Use /checkin each morning to help me learn._"
-        )
+        lines.append("_Still building patterns — need a few more weeks of check-ins._\n")
+        lines.append("*Your Baselines (last 30 days):*")
+        from datetime import datetime as _dt
+        from app.models.daily_metric import DailyMetric as _DM
+        from sqlalchemy import func as _func
+        target_date = _today_local(user)
+        month_start = target_date - timedelta(days=30)
+        with SessionLocal() as bsession:
+            def _avg30(col):
+                return bsession.scalar(
+                    select(_func.avg(col)).where(
+                        _DM.user_id == user.id,
+                        _DM.date >= month_start,
+                        _DM.date < target_date,
+                        col.is_not(None),
+                    )
+                )
+            avg_recovery = _avg30(_DM.recovery_score)
+            avg_hrv = _avg30(_DM.hrv_ms)
+            avg_sleep = _avg30(_DM.sleep_hours)
+            avg_rhr = _avg30(_DM.resting_heart_rate)
+            avg_weight = _avg30(_DM.weight)
+            avg_bf = _avg30(_DM.body_fat_pct)
+
+        if avg_recovery:
+            lines.append(f"• Recovery: {avg_recovery:.0f} avg")
+        if avg_hrv:
+            lines.append(f"• HRV: {avg_hrv:.0f}ms avg")
+        if avg_sleep:
+            lines.append(f"• Sleep: {avg_sleep:.1f}h avg")
+        if avg_rhr:
+            lines.append(f"• Resting HR: {avg_rhr:.0f} bpm avg")
+        if avg_weight:
+            lines.append(f"• Weight: {avg_weight * 2.20462:.1f} lbs avg")
+        if avg_bf:
+            lines.append(f"• Body fat: {avg_bf:.1f}% avg")
+        if not any([avg_recovery, avg_hrv, avg_sleep, avg_rhr]):
+            lines.append("_No data yet — run /today after connecting WHOOP._")
     else:
         stronger = [o for o in observations if o.status == "stronger_signal"]
         promising = [o for o in observations if o.status == "promising"]

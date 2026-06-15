@@ -19,11 +19,15 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("checkin", handlers.checkin))
     application.add_handler(CommandHandler("weekly", handlers.weekly))
     application.add_handler(CommandHandler("manual", handlers.manual))
+    application.add_handler(CommandHandler("goal", handlers.goal))
+    application.add_handler(CommandHandler("history", handlers.history))
+    application.add_handler(CommandHandler("focus", handlers.focus))
     application.add_handler(CommandHandler("backfill", handlers.backfill))
     application.add_handler(CommandHandler("delete", handlers.delete))
 
     application.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci_"))
     application.add_handler(CallbackQueryHandler(handlers.delete_callback, pattern=r"^del_"))
+    application.add_handler(CallbackQueryHandler(handlers.goal_callback, pattern=r"^goal:"))
 
     # Any non-command text is a question to the coach
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.plain_text))

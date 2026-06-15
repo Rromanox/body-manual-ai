@@ -324,6 +324,32 @@ def _consecutive_days(by_date: dict, target_date: date, predicate) -> int:
         day -= timedelta(days=1)
 
 
+def get_checkin_streak(session: Session, user_id: int, target_date: date) -> int:
+    """Count consecutive days with a journal entry, looking back from yesterday."""
+    from app.models.journal_entry import JournalEntry
+
+    lookback = target_date - timedelta(days=60)
+    journal_dates = set(
+        session.scalars(
+            select(JournalEntry.date).where(
+                JournalEntry.user_id == user_id,
+                JournalEntry.date >= lookback,
+                JournalEntry.date < target_date,
+            )
+        ).all()
+    )
+
+    streak = 0
+    day = target_date - timedelta(days=1)
+    while day >= lookback:
+        if day in journal_dates:
+            streak += 1
+            day -= timedelta(days=1)
+        else:
+            break
+    return streak
+
+
 # ---------------------------------------------------------------------------
 # Weekly snapshot
 # ---------------------------------------------------------------------------

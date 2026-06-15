@@ -21,12 +21,15 @@ logger = logging.getLogger(__name__)
 
 # Which metrics to track for each check-in tag
 TRACKED_PAIRS: dict[str, list[str]] = {
-    "alcohol":     ["recovery", "hrv_ms", "sleep_hours"],
-    "late_meal":   ["recovery", "sleep_hours", "sleep_efficiency"],
-    "high_stress": ["recovery", "resting_heart_rate", "hrv_ms"],
-    "sick":        ["recovery", "resting_heart_rate"],
-    "travel":      ["recovery", "sleep_hours"],
-    "hard_day":    ["recovery", "hrv_ms"],
+    "alcohol":        ["recovery", "hrv_ms", "sleep_hours"],
+    "late_meal":      ["recovery", "sleep_hours", "sleep_efficiency"],
+    "high_stress":    ["recovery", "resting_heart_rate", "hrv_ms"],
+    "sick":           ["recovery", "resting_heart_rate"],
+    "travel":         ["recovery", "sleep_hours"],
+    "hard_day":       ["recovery", "hrv_ms"],
+    "late_caffeine":  ["recovery", "sleep_hours", "hrv_ms"],
+    "dehydrated":     ["recovery", "hrv_ms", "resting_heart_rate"],
+    "big_meal":       ["recovery", "sleep_hours", "sleep_efficiency"],
 }
 
 DESCRIPTIONS: dict[tuple[str, str], str] = {
@@ -43,8 +46,17 @@ DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("sick", "resting_heart_rate"):         "Being sick elevates resting heart rate",
     ("travel", "recovery"):                 "Travel may reduce next-day recovery",
     ("travel", "sleep_hours"):              "Travel may disrupt sleep",
-    ("hard_day", "recovery"):              "Hard days may lower next-day recovery",
-    ("hard_day", "hrv_ms"):                "Hard days may suppress next-day HRV",
+    ("hard_day", "recovery"):               "Hard days may lower next-day recovery",
+    ("hard_day", "hrv_ms"):                 "Hard days may suppress next-day HRV",
+    ("late_caffeine", "recovery"):          "Late caffeine may lower next-day recovery",
+    ("late_caffeine", "sleep_hours"):       "Late caffeine may shorten sleep",
+    ("late_caffeine", "hrv_ms"):            "Late caffeine may suppress next-day HRV",
+    ("dehydrated", "recovery"):             "Dehydration may lower next-day recovery",
+    ("dehydrated", "hrv_ms"):              "Dehydration may suppress HRV",
+    ("dehydrated", "resting_heart_rate"):   "Dehydration may elevate resting heart rate",
+    ("big_meal", "recovery"):               "Large meals late in the day may affect next-day recovery",
+    ("big_meal", "sleep_hours"):            "Large meals may disrupt sleep duration",
+    ("big_meal", "sleep_efficiency"):       "Large meals may reduce sleep efficiency",
 }
 
 # Maps the metric key used in TRACKED_PAIRS to the DailyMetric column name

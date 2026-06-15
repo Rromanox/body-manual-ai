@@ -10,7 +10,7 @@ from typing import Any
 
 from app.models.daily_metric import DailyMetric
 from app.models.user import User
-from app.services.baseline_engine import DailySnapshot, MetricSummary, QAContext, WeeklySnapshot
+from app.services.baseline_engine import DailySnapshot, MetricSummary, QAContext, WeeklySnapshot, get_checkin_streak
 
 
 def build_daily_payload(
@@ -18,14 +18,18 @@ def build_daily_payload(
     snapshot: DailySnapshot,
     yesterday_tags: list[str] | None = None,
     today_metric_row: DailyMetric | None = None,
+    checkin_streak: int = 0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "user_name": user.first_name or None,
         "user_goal": user.goal or "general_health",
+        "day_of_week": snapshot.target_date.strftime("%A"),
         "data_days_available": snapshot.data_days_available,
         "data_maturity": snapshot.data_maturity,
         "today_recovery_missing": snapshot.recovery.today is None,
     }
+    if checkin_streak >= 3:
+        payload["checkin_streak"] = checkin_streak
     for key, summary in (
         ("recovery", snapshot.recovery),
         ("sleep_hours", snapshot.sleep_hours),

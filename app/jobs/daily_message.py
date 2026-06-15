@@ -21,10 +21,11 @@ from app.models.user import User
 from app.services.ai_client import generate_daily_message
 from app.services.alerts import send_admin_alert
 from app.services.observation_engine import recalculate_observations
-from app.services.baseline_engine import build_daily_snapshot, safety_message
+from app.services.baseline_engine import build_daily_snapshot, get_checkin_streak, safety_message
 from app.models.daily_metric import DailyMetric
 from app.services.coach_payload_builder import build_daily_payload
 from app.services.whoop_client import WhoopAuthError
+from app.services.withings_client import WithingsAuthError
 from app.telegram.bot import get_application
 from app.telegram.keyboards import checkin_keyboard
 
@@ -77,6 +78,10 @@ async def _send_for_user(user_id: int) -> None:
                 await send_admin_alert(
                     f"WHOOP auth expired for user {user_id} during morning pull: {exc}"
                 )
+                await bot.send_message(
+                    chat_id=user.telegram_id,
+                    text="Your WHOOP connection stopped working — tap /connect_whoop to reconnect.",
+                )
                 return
             except Exception as exc:
                 logger.exception("Morning pull failed for user %s", user_id)
@@ -98,8 +103,21 @@ async def _send_for_user(user_id: int) -> None:
             break
 
     # Withings pull is non-fatal — missing body comp is fine, WHOOP still runs
+    withings_telegram_id: int | None = None
     try:
+        with SessionLocal() as _s:
+            _u = _s.get(User, user_id)
+            if _u:
+                withings_telegram_id = _u.telegram_id
         await pull_withings_and_store(user_id, days=7)
+    except WithingsAuthError as exc:
+        logger.warning("Withings auth broken for user %s: %s", user_id, exc)
+        await send_admin_alert(f"Withings auth broken for user {user_id}: {exc}")
+        if withings_telegram_id:
+            await bot.send_message(
+                chat_id=withings_telegram_id,
+                text="Your Withings scale disconnected — tap /connect_withings to reconnect.",
+            )
     except Exception as exc:
         logger.warning("Withings pull skipped for user %s: %s", user_id, exc)
 
@@ -125,8 +143,10 @@ async def _send_for_user(user_id: int) -> None:
                 DailyMetric.user_id == user.id, DailyMetric.date == target_date
             )
         )
+        streak = get_checkin_streak(session, user.id, target_date)
         payload = build_daily_payload(
-            user, snapshot, yesterday_tags=yesterday_tags, today_metric_row=today_row
+            user, snapshot, yesterday_tags=yesterday_tags,
+            today_metric_row=today_row, checkin_streak=streak,
         )
 
         try:

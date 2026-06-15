@@ -165,6 +165,13 @@ No diagnosis, no meds, no supplements — not your job and you know it.
 Zero exclamation marks. A period works fine.
 Stop when you've answered the question. Do not add offers of further help — phrases like "just let me know", "if you want to discuss", "I can assist you further", "feel free to ask" are all banned. The user knows they can ask follow-up questions. End on the answer, nothing after it."""
 
+FOCUS_SYSTEM_PROMPT = """\
+You're this person's health coach and close friend giving them one concrete focus for the week.
+You have their 7-day data vs 30-day baselines. Find the single metric that most needs attention
+and give them one specific, actionable thing to do about it — in 1-2 sentences.
+Be direct. No preamble. No sign-off. Just the observation and the action.
+Zero exclamation marks. Compare only to their own normal, never population averages."""
+
 _client: AsyncOpenAI | None = None
 
 
@@ -207,6 +214,19 @@ async def generate_qa_response(
     text = (response.output_text or "").strip()
     if not text:
         raise RuntimeError("OpenAI returned no text for Q&A response")
+    return text
+
+
+async def generate_focus_response(payload: dict[str, Any]) -> str:
+    response = await _get_client().responses.create(
+        model=settings.openai_model,
+        instructions=FOCUS_SYSTEM_PROMPT,
+        input=[{"role": "user", "content": json.dumps(payload)}],
+        max_output_tokens=300,
+    )
+    text = (response.output_text or "").strip()
+    if not text:
+        raise RuntimeError("OpenAI returned no text for focus response")
     return text
 
 

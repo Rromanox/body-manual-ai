@@ -9,6 +9,15 @@ CHECKIN_TAGS: list[tuple[str, str]] = [
     ("🤒 Sick", "sick"),
     ("✈️ Travel", "travel"),
     ("💪 Hard day", "hard_day"),
+    ("☕ Late caffeine", "late_caffeine"),
+    ("💧 Dehydrated", "dehydrated"),
+    ("🍽️ Big meal", "big_meal"),
+]
+
+GOALS: list[tuple[str, str]] = [
+    ("General health", "general_health"),
+    ("Performance", "performance"),
+    ("Weight loss", "weight_loss"),
 ]
 
 
@@ -21,6 +30,14 @@ def checkin_keyboard(selected: set[str]) -> InlineKeyboardMarkup:
         InlineKeyboardButton("None of these", callback_data="ci_none"),
         InlineKeyboardButton("Save ✓", callback_data="ci_done"),
     ])
+    return InlineKeyboardMarkup(rows)
+
+
+def goal_keyboard(current_goal: str | None) -> InlineKeyboardMarkup:
+    rows = []
+    for label, value in GOALS:
+        prefix = "✓ " if value == current_goal else ""
+        rows.append([InlineKeyboardButton(f"{prefix}{label}", callback_data=f"goal:{value}")])
     return InlineKeyboardMarkup(rows)
 
 
