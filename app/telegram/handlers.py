@@ -444,7 +444,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
 
         target_date = _today_local(user)
-        qa_ctx = build_qa_context(session, user.id, target_date)
+        qa_ctx = build_qa_context(session, user.id, target_date, user=user)
         payload = build_qa_payload(question, qa_ctx)
         user_id = user.id
 

@@ -24,7 +24,7 @@ AUTHORIZE_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 API_BASE_URL = "https://api.prod.whoop.com/developer"
 # offline is what grants refresh tokens — request these five scopes and nothing else
-SCOPES = "offline read:cycles read:recovery read:sleep read:workout"
+SCOPES = "offline read:cycles read:recovery read:sleep read:workout read:body_measurement"
 PAGE_LIMIT = 25
 REFRESH_MARGIN = timedelta(minutes=5)
 STATE_TTL_SECONDS = 600
@@ -182,6 +182,20 @@ async def fetch_collection(
             if not next_token:
                 return records
             params["nextToken"] = next_token
+
+
+async def fetch_body_measurement(access_token: str) -> dict[str, Any]:
+    """Fetch the user's body measurement profile (height, weight, max HR) from WHOOP."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, base_url=API_BASE_URL, headers=headers) as client:
+        response = await client.get("/v2/body_measurement")
+    if response.status_code == 401:
+        raise WhoopAuthError("WHOOP rejected access token on GET /v2/body_measurement")
+    if response.status_code != 200:
+        raise WhoopApiError(
+            f"GET /v2/body_measurement failed ({response.status_code}): {response.text}"
+        )
+    return response.json()
 
 
 def _iso_utc(value: datetime) -> str:

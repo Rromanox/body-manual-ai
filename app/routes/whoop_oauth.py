@@ -18,7 +18,9 @@ from app.services.whoop_client import (
     WhoopApiError,
     WhoopAuthError,
     apply_token_response,
+    ensure_fresh_access_token,
     exchange_code,
+    fetch_body_measurement,
     verify_oauth_state,
 )
 from app.telegram.bot import get_application
@@ -84,6 +86,23 @@ async def _notify_and_backfill(user_id: int, telegram_id: int) -> None:
             if user is None:
                 return
             written = await pull_and_store(session, user, days=BACKFILL_DAYS)
+            # Pull body profile (height, max HR) from WHOOP
+            try:
+                conn = session.scalar(
+                    select(OAuthConnection).where(
+                        OAuthConnection.user_id == user_id, OAuthConnection.provider == "whoop"
+                    )
+                )
+                if conn:
+                    token = await ensure_fresh_access_token(session, conn)
+                    bm = await fetch_body_measurement(token)
+                    if bm.get("max_heart_rate"):
+                        user.max_heart_rate = float(bm["max_heart_rate"])
+                    if bm.get("height_meter"):
+                        user.height_meter = float(bm["height_meter"])
+                    session.commit()
+            except Exception as bm_exc:
+                logger.warning("WHOOP body measurement fetch failed: %s", bm_exc)
         await bot.send_message(
             chat_id=telegram_id,
             text=f"Done — {written} days of data loaded. Try /today for your first coach message.",

@@ -296,9 +296,11 @@ class QAContext:
     avg_30d: dict[str, float | None]
     recent_tags: list[str]
     observations: list[str]
+    max_heart_rate: float | None = None
+    height_meter: float | None = None
 
 
-def build_qa_context(session: Session, user_id: int, target_date: date) -> QAContext:
+def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
     from app.models.journal_entry import JournalEntry
     from app.models.observation import Observation
 
@@ -346,4 +348,6 @@ def build_qa_context(session: Session, user_id: int, target_date: date) -> QACon
         avg_30d=avg_30d,
         recent_tags=recent_tags,
         observations=observations,
+        max_heart_rate=getattr(user, "max_heart_rate", None) if user else None,
+        height_meter=getattr(user, "height_meter", None) if user else None,
     )

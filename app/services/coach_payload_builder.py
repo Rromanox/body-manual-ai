@@ -101,6 +101,8 @@ def build_qa_payload(question: str, context: QAContext) -> dict[str, Any]:
         "averages_last_30_days": {k: _r(v) for k, v in context.avg_30d.items()},
         "recent_tags_last_7_days": context.recent_tags,
         "observations": context.observations,
+        **({"max_heart_rate": context.max_heart_rate} if context.max_heart_rate else {}),
+        **({"height_meter": _round1(context.height_meter)} if context.height_meter else {}),
     }
 
 
