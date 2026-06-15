@@ -72,6 +72,21 @@ def build_daily_payload(
             body_comp["bone_mass_lbs"] = _round1(_kg_to_lbs(today_metric_row.bone_mass))
         if body_comp:
             payload["body_composition"] = body_comp
+
+    # Weight trend is independent of whether today has a body comp row
+    # (it's computed from the last 16 days of weight history)
+    if snapshot.weight_trend is not None:
+        wt = snapshot.weight_trend
+        weight_block: dict[str, Any] = {}
+        if wt.overnight_change_lbs is not None:
+            weight_block["overnight_change_lbs"] = wt.overnight_change_lbs
+        if wt.weekly_trend_lbs is not None:
+            weight_block["trend_per_week_lbs"] = wt.weekly_trend_lbs
+        if wt.flag:
+            weight_block["flag"] = wt.flag
+        if weight_block:
+            payload.setdefault("body_composition", {})["weight_trend"] = weight_block
+
     return payload
 
 

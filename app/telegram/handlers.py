@@ -35,6 +35,26 @@ from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard
 
 logger = logging.getLogger(__name__)
 
+# SPEC §Safety Rules: symptom keywords detected in Q&A → hard-coded response, never AI
+_MEDICAL_KEYWORDS = [
+    "chest pain", "chest tightness", "heart attack", "can't breathe", "cannot breathe",
+    "shortness of breath", "trouble breathing", "fainting", "fainted", "passed out",
+    "blacked out", "severe dizziness", "severe headache", "sudden headache",
+    "blurred vision", "vision problems", "numbness", "arm pain", "jaw pain",
+    "heart palpitations", "racing heart", "irregular heartbeat", "skipping beats",
+]
+
+_MEDICAL_RESPONSE = (
+    "What you're describing sounds like it could be a medical issue — please stop "
+    "and contact a doctor or emergency services. Don't wait on me for this one."
+)
+
+
+def _has_medical_keyword(text: str) -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in _MEDICAL_KEYWORDS)
+
+
 CONSENT_MESSAGE = """\
 Hey {name} — I'm your body coach. Before we start, here's the deal in plain English:
 
@@ -448,6 +468,9 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     question = (update.message.text or "").strip()
     if not question:
+        return
+    if _has_medical_keyword(question):
+        await update.message.reply_text(_MEDICAL_RESPONSE)
         return
     telegram_id = update.effective_user.id
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)

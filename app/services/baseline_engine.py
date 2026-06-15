@@ -31,9 +31,16 @@ RECOVERY_VERY_LOW = 33.0
 RHR_STREAK_DAYS = 5
 RECOVERY_STREAK_DAYS = 7
 
+# Weight trend constants (Withings data)
+KG_TO_LBS = 2.20462
+WATER_SPIKE_LBS = 2.5         # overnight Δ suggesting water weight or measurement noise
+WEIGHT_TREND_FLAG_LBS = 0.5   # weekly rate (absolute) before flagging a trend
+WEIGHT_LOSS_SAFETY_LBS = 3.0  # lbs/week → safety trigger for rapid loss
+
 SAFETY_TRIGGER_DESCRIPTIONS = {
     "rhr_elevated_5d": "your resting heart rate has been above your normal for 5+ days in a row",
     "recovery_low_7d": "your recovery has been very low for 7+ days in a row",
+    "weight_loss_rapid": "your weight has dropped more than 3 lbs per week on average over the past two weeks — rapid unexplained loss is worth checking on",
 }
 
 
@@ -43,6 +50,13 @@ class MetricSummary:
     baseline_7d: float | None
     baseline_30d: float | None
     flag: str | None
+
+
+@dataclass
+class WeightTrend:
+    overnight_change_lbs: float | None  # positive = gained, negative = lost
+    weekly_trend_lbs: float | None      # positive = gaining per week, negative = losing
+    flag: str | None                    # "spike_likely_water" | "declining" | "gaining"
 
 
 @dataclass
@@ -58,6 +72,7 @@ class DailySnapshot:
     data_days_available: int
     data_maturity: str
     safety_triggers: list[str]
+    weight_trend: WeightTrend | None = None
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -78,6 +93,7 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         resting_hr.flag = _flag_rhr(resting_hr)
         hrv.flag = _flag_hrv(hrv)
 
+    weight_trend = _build_weight_trend(session, user_id, target_date)
     return DailySnapshot(
         target_date=target_date,
         recovery=recovery,
@@ -89,7 +105,8 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         yesterday_workout_minutes=yesterday_row.total_workout_minutes if yesterday_row else None,
         data_days_available=data_days,
         data_maturity=_maturity(data_days),
-        safety_triggers=_safety_triggers(session, user_id, target_date, resting_hr.baseline_30d),
+        safety_triggers=_safety_triggers(session, user_id, target_date, resting_hr.baseline_30d, weight_trend),
+        weight_trend=weight_trend,
     )
 
 
@@ -205,8 +222,68 @@ def _maturity(data_days: int) -> str:
     return "established"
 
 
+def _build_weight_trend(session: Session, user_id: int, target_date: date) -> WeightTrend | None:
+    """Compute overnight weight change and weekly trend from Withings data (kg → lbs)."""
+    window_start = target_date - timedelta(days=16)
+    rows = session.scalars(
+        select(DailyMetric)
+        .where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= window_start,
+            DailyMetric.date <= target_date,
+            DailyMetric.weight.is_not(None),
+        )
+        .order_by(DailyMetric.date.desc())
+    ).all()
+
+    if not rows:
+        return None
+
+    # Overnight change: today vs the most recent previous reading
+    today_weight: float | None = None
+    prev_weight: float | None = None
+    for r in rows:
+        if r.date == target_date:
+            today_weight = r.weight
+        elif today_weight is not None and prev_weight is None:
+            prev_weight = r.weight
+            break
+
+    overnight_change_lbs: float | None = None
+    if today_weight is not None and prev_weight is not None:
+        overnight_change_lbs = round((today_weight - prev_weight) * KG_TO_LBS, 1)
+
+    # Weekly trend: avg of recent 7 days vs avg of prior 7 days (days 8-16)
+    today_ord = target_date.toordinal()
+    week1 = [r.weight for r in rows if (today_ord - r.date.toordinal()) < 7]
+    week2 = [r.weight for r in rows if 7 <= (today_ord - r.date.toordinal()) < 16]
+
+    weekly_trend_lbs: float | None = None
+    if week1 and week2:
+        diff_kg = (sum(week1) / len(week1)) - (sum(week2) / len(week2))
+        weekly_trend_lbs = round(diff_kg * KG_TO_LBS, 1)
+
+    flag: str | None = None
+    if overnight_change_lbs is not None and abs(overnight_change_lbs) >= WATER_SPIKE_LBS:
+        flag = "spike_likely_water"
+    elif weekly_trend_lbs is not None:
+        if weekly_trend_lbs <= -WEIGHT_TREND_FLAG_LBS:
+            flag = "declining"
+        elif weekly_trend_lbs >= WEIGHT_TREND_FLAG_LBS:
+            flag = "gaining"
+
+    if overnight_change_lbs is None and weekly_trend_lbs is None:
+        return None
+    return WeightTrend(
+        overnight_change_lbs=overnight_change_lbs,
+        weekly_trend_lbs=weekly_trend_lbs,
+        flag=flag,
+    )
+
+
 def _safety_triggers(
-    session: Session, user_id: int, target_date: date, rhr_baseline_30d: float | None
+    session: Session, user_id: int, target_date: date, rhr_baseline_30d: float | None,
+    weight_trend: WeightTrend | None = None,
 ) -> list[str]:
     window_start = target_date - timedelta(days=max(RHR_STREAK_DAYS, RECOVERY_STREAK_DAYS) + 2)
     rows = session.scalars(
@@ -227,6 +304,12 @@ def _safety_triggers(
             triggers.append("rhr_elevated_5d")
     if _consecutive_days(by_date, target_date, lambda r: r.recovery_score is not None and r.recovery_score < RECOVERY_VERY_LOW) >= RECOVERY_STREAK_DAYS:
         triggers.append("recovery_low_7d")
+    if (
+        weight_trend is not None
+        and weight_trend.weekly_trend_lbs is not None
+        and weight_trend.weekly_trend_lbs <= -WEIGHT_LOSS_SAFETY_LBS
+    ):
+        triggers.append("weight_loss_rapid")
     return triggers
 
 

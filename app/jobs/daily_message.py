@@ -55,20 +55,58 @@ async def _send_for_user(user_id: int) -> None:
     from app.routes.withings_oauth import pull_withings_and_store
 
     bot = get_application().bot
+
+    # Pull-at-send with retry: SPEC says retry every 30 min (max 4) if today's recovery
+    # hasn't finalized yet (WHOOP recovery typically scores around wake time)
+    for attempt in range(5):
+        if attempt > 0:
+            logger.info(
+                "Recovery not yet available for user %s — retry %d/4 in 30 min", user_id, attempt
+            )
+            await asyncio.sleep(30 * 60)
+
+        with SessionLocal() as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return
+            try:
+                await pull_and_store(session, user, days=7 if attempt == 0 else 2)
+                if attempt == 0:
+                    recalculate_observations(session, user_id)
+            except WhoopAuthError as exc:
+                await send_admin_alert(
+                    f"WHOOP auth expired for user {user_id} during morning pull: {exc}"
+                )
+                return
+            except Exception as exc:
+                logger.exception("Morning pull failed for user %s", user_id)
+                await send_admin_alert(f"Morning pull failed for user {user_id}: {exc}")
+                return
+
+            target_date = datetime.now(ZoneInfo(user.timezone)).date()
+            has_recovery = bool(
+                session.scalar(
+                    select(DailyMetric.recovery_score).where(
+                        DailyMetric.user_id == user_id,
+                        DailyMetric.date == target_date,
+                        DailyMetric.recovery_score.is_not(None),
+                    )
+                )
+            )
+
+        if has_recovery or attempt == 4:
+            break
+
+    # Withings pull is non-fatal — missing body comp is fine, WHOOP still runs
+    try:
+        await pull_withings_and_store(user_id, days=7)
+    except Exception as exc:
+        logger.warning("Withings pull skipped for user %s: %s", user_id, exc)
+
+    # Build and send the message with whatever data is available
     with SessionLocal() as session:
         user = session.get(User, user_id)
         if user is None:
-            return
-
-        try:
-            await pull_and_store(session, user, days=7)
-            recalculate_observations(session, user_id)
-        except WhoopAuthError as exc:
-            await send_admin_alert(f"WHOOP auth expired for user {user_id} during morning pull: {exc}")
-            return
-        except Exception as exc:
-            logger.exception("Morning pull failed for user %s", user_id)
-            await send_admin_alert(f"Morning pull failed for user {user_id}: {exc}")
             return
 
         target_date = datetime.now(ZoneInfo(user.timezone)).date()
@@ -87,7 +125,9 @@ async def _send_for_user(user_id: int) -> None:
                 DailyMetric.user_id == user.id, DailyMetric.date == target_date
             )
         )
-        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags, today_metric_row=today_row)
+        payload = build_daily_payload(
+            user, snapshot, yesterday_tags=yesterday_tags, today_metric_row=today_row
+        )
 
         try:
             message_text = await generate_daily_message(payload)
@@ -100,21 +140,17 @@ async def _send_for_user(user_id: int) -> None:
         if caution:
             message_text = f"{message_text}\n\n{caution}"
 
-        session.add(CoachMessage(
-            user_id=user.id,
-            date=target_date,
-            message_type="daily",
-            summary_payload=payload,
-            ai_response=message_text,
-        ))
+        session.add(
+            CoachMessage(
+                user_id=user.id,
+                date=target_date,
+                message_type="daily",
+                summary_payload=payload,
+                ai_response=message_text,
+            )
+        )
         session.commit()
         telegram_id = user.telegram_id
-
-    # Withings pull is non-fatal — missing body comp is fine, WHOOP still runs
-    try:
-        await pull_withings_and_store(user_id, days=7)
-    except Exception as exc:
-        logger.warning("Withings pull skipped for user %s: %s", user_id, exc)
 
     await bot.send_message(chat_id=telegram_id, text=message_text)
     await bot.send_message(
