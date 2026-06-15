@@ -107,13 +107,14 @@ def build_qa_payload(question: str, context: QAContext) -> dict[str, Any]:
 
     return {
         "question": question,
+        "today_date": context.today_date,
         "data_days_available": context.data_days_available,
         "data_maturity": context.data_maturity,
+        "recent_daily_data": context.recent_daily_data,
         "averages_last_7_days": {k: _r(v) for k, v in context.avg_7d.items()},
         "averages_last_30_days": {k: _r(v) for k, v in context.avg_30d.items()},
         "recent_tags_last_7_days": context.recent_tags,
         "observations": context.observations,
-        **({"recent_sleep_times": context.recent_sleep_times} if context.recent_sleep_times else {}),
         **({"max_heart_rate": context.max_heart_rate} if context.max_heart_rate else {}),
         **({"height_meter": _round1(context.height_meter)} if context.height_meter else {}),
     }
