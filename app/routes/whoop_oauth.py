@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-BACKFILL_DAYS = 30
+BACKFILL_DAYS = 365
 
 
 @router.get("/auth/whoop/callback", response_class=HTMLResponse)
