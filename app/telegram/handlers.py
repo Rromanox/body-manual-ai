@@ -798,16 +798,27 @@ async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         limit = 30
 
     from app.models.message_log import MessageLog as _ML
-    with SessionLocal() as session:
-        rows = session.scalars(
-            select(_ML)
-            .where(_ML.telegram_id == telegram_id)
-            .order_by(_ML.created_at.desc())
-            .limit(limit)
-        ).all()
+    try:
+        with SessionLocal() as session:
+            rows = session.scalars(
+                select(_ML)
+                .where(_ML.telegram_id == telegram_id)
+                .order_by(_ML.created_at.desc())
+                .limit(limit)
+            ).all()
+    except Exception as exc:
+        logger.exception("/chatlog DB query failed")
+        await update.message.reply_text(
+            f"Couldn't read chat log — the table may still be migrating. "
+            f"Try again in a moment. (Error: {type(exc).__name__})"
+        )
+        return
 
     if not rows:
-        await update.message.reply_text("No chat history yet.")
+        await update.message.reply_text(
+            "No chat history yet — the log started recording after the last deploy. "
+            "Send any message or command and then /chatlog again."
+        )
         return
 
     TYPE_EMOJI = {

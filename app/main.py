@@ -100,6 +100,21 @@ async def privacy_policy() -> HTMLResponse:
     return HTMLResponse(content=path.read_text(encoding="utf-8"))
 
 
+@app.get("/debug/db")
+async def debug_db() -> dict:
+    """Check which tables exist and row counts — useful for verifying migrations ran."""
+    from sqlalchemy import inspect, text
+    from app.db import engine
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    counts: dict[str, int] = {}
+    with engine.connect() as conn:
+        for t in tables:
+            row = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+            counts[t] = int(row or 0)
+    return {"tables": tables, "row_counts": counts}
+
+
 @app.get("/debug/webhook")
 async def debug_webhook() -> dict:
     info = await get_application().bot.get_webhook_info()
