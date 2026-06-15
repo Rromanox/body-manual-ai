@@ -296,6 +296,7 @@ class QAContext:
     avg_30d: dict[str, float | None]
     recent_tags: list[str]
     observations: list[str]
+    recent_sleep_times: list[dict]  # [{date, bedtime, wake_time, rem_h, deep_h}]
     max_heart_rate: float | None = None
     height_meter: float | None = None
 
@@ -331,6 +332,29 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
     ).all()
     recent_tags = list({tag for entry in recent_entries for tag in (entry.tags or [])})
 
+    recent_sleep_rows = session.scalars(
+        select(DailyMetric)
+        .where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= week_start,
+            DailyMetric.date <= yesterday,
+        )
+        .order_by(DailyMetric.date.desc())
+        .limit(7)
+    ).all()
+    recent_sleep_times = [
+        {
+            "date": str(r.date),
+            "bedtime": r.sleep_start_local,
+            "wake_time": r.sleep_end_local,
+            "sleep_hours": round(r.sleep_hours, 1) if r.sleep_hours else None,
+            "rem_hours": round(r.rem_sleep_hours, 1) if r.rem_sleep_hours else None,
+            "deep_hours": round(r.deep_sleep_hours, 1) if r.deep_sleep_hours else None,
+        }
+        for r in recent_sleep_rows
+        if r.sleep_start_local or r.sleep_end_local
+    ]
+
     obs_rows = session.scalars(
         select(Observation)
         .where(Observation.user_id == user_id, Observation.status != "archived")
@@ -350,6 +374,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         avg_30d=avg_30d,
         recent_tags=recent_tags,
         observations=observations,
+        recent_sleep_times=recent_sleep_times,
         max_heart_rate=getattr(user, "max_heart_rate", None) if user else None,
         height_meter=getattr(user, "height_meter", None) if user else None,
     )
