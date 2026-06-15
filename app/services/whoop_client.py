@@ -174,6 +174,10 @@ async def fetch_collection(
             response = await client.get(path, params=params)
             if response.status_code == 401:
                 raise WhoopAuthError(f"WHOOP rejected access token on GET {path}")
+            if response.status_code == 429:
+                raise WhoopApiError(
+                    f"WHOOP rate limit hit on GET {path} — wait a few minutes and try again."
+                )
             if response.status_code != 200:
                 raise WhoopApiError(f"GET {path} failed ({response.status_code}): {response.text}")
             body = response.json()

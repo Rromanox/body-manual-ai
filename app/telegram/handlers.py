@@ -419,7 +419,14 @@ async def backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         logger.exception("/backfill failed for user %s", user_id)
         await send_admin_alert(f"/backfill failed for user {user_id}: {exc}")
-        await update.message.reply_text("Something went wrong pulling WHOOP data — I've flagged it.")
+        msg = str(exc)
+        if "rate limit" in msg.lower() or "429" in msg:
+            await update.message.reply_text(
+                "WHOOP rate-limited the request — you likely just did a large pull. "
+                "Wait 5 minutes and try /backfill again."
+            )
+        else:
+            await update.message.reply_text("Something went wrong pulling WHOOP data — I've flagged it.")
         return
 
     from app.routes.withings_oauth import pull_withings_and_store
