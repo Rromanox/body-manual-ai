@@ -105,6 +105,7 @@ async def exchange_code(code: str) -> dict[str, Any]:
             "client_id": settings.whoop_client_id,
             "client_secret": settings.whoop_client_secret,
             "redirect_uri": redirect_uri(),
+            "scope": "offline",
         }
     )
 
@@ -143,7 +144,7 @@ async def ensure_fresh_access_token(session: Session, connection: OAuthConnectio
 
 async def _token_request(data: dict[str, str]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.post(TOKEN_URL, json=data)
+        response = await client.post(TOKEN_URL, data=data)
     if response.status_code in (400, 401):
         raise WhoopAuthError(f"WHOOP token request rejected ({response.status_code}): {response.text}")
     if response.status_code != 200:
