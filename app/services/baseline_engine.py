@@ -298,6 +298,7 @@ class QAContext:
     observations: list[str]
     recent_daily_data: list[dict]  # per-day actuals, newest-first, last 7 days
     today_date: str  # "YYYY-MM-DD" so AI knows which row is today
+    user_name: str | None = None
     max_heart_rate: float | None = None
     height_meter: float | None = None
 
@@ -396,6 +397,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         observations=observations,
         recent_daily_data=recent_daily_data,
         today_date=str(target_date),
+        user_name=getattr(user, "first_name", None) if user else None,
         max_heart_rate=getattr(user, "max_heart_rate", None) if user else None,
         height_meter=getattr(user, "height_meter", None) if user else None,
     )

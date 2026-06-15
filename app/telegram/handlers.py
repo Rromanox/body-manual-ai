@@ -468,6 +468,24 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         payload = build_qa_payload(question, qa_ctx)
         user_id = user.id
 
+        # Last 5 Q&A exchanges as conversation history so the AI remembers the thread
+        history_rows = session.scalars(
+            select(CoachMessage)
+            .where(
+                CoachMessage.user_id == user.id,
+                CoachMessage.message_type == "q_and_a",
+                CoachMessage.ai_response != "",
+            )
+            .order_by(CoachMessage.id.desc())
+            .limit(5)
+        ).all()
+        history: list[dict[str, str]] = []
+        for row in reversed(history_rows):
+            q = (row.summary_payload or {}).get("question", "")
+            if q and row.ai_response:
+                history.append({"role": "user", "content": q})
+                history.append({"role": "assistant", "content": row.ai_response})
+
         session.add(CoachMessage(
             user_id=user.id,
             date=target_date,
@@ -484,7 +502,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ).first()
 
     try:
-        response_text = await generate_qa_response(payload)
+        response_text = await generate_qa_response(payload, history=history)
     except Exception as exc:
         logger.exception("Q&A call failed for user %s", user_id)
         await send_admin_alert(f"Q&A call failed for user {user_id}: {exc}")

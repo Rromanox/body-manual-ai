@@ -20,6 +20,7 @@ def build_daily_payload(
     today_metric_row: DailyMetric | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "user_name": user.first_name or None,
         "user_goal": user.goal or "general_health",
         "data_days_available": snapshot.data_days_available,
         "data_maturity": snapshot.data_maturity,
@@ -107,6 +108,7 @@ def build_qa_payload(question: str, context: QAContext) -> dict[str, Any]:
 
     return {
         "question": question,
+        "user_name": context.user_name or None,
         "today_date": context.today_date,
         "data_days_available": context.data_days_available,
         "data_maturity": context.data_maturity,
