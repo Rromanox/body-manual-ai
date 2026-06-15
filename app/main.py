@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
-from telegram import Update
+from telegram import BotCommand, Update
 
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_pull import run_daily_pull
@@ -37,6 +37,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         allowed_updates=list(Update.ALL_TYPES),
         drop_pending_updates=True,
     )
+    await application.bot.set_my_commands([
+        BotCommand("today", "Get your coach message for today"),
+        BotCommand("connect_whoop", "Connect your WHOOP account"),
+        BotCommand("backfill", "Re-pull 365 days of WHOOP data"),
+        BotCommand("start", "Set up your account"),
+    ])
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.default_timezone))
