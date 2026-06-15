@@ -407,19 +407,32 @@ async def backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         user_id = user.id
 
-    await update.message.reply_text("Pulling your last 365 days from WHOOP — this may take a minute…")
+    await update.message.reply_text("Pulling your last 365 days from WHOOP and Withings — this may take a minute…")
     try:
         with SessionLocal() as session:
             user = session.get(User, user_id)
             written = await pull_and_store(session, user, days=365)
-        await update.message.reply_text(f"Done — {written} days of data loaded.")
     except WhoopAuthError as exc:
         await send_admin_alert(f"WHOOP auth failed for user {user_id} during /backfill: {exc}")
         await update.message.reply_text("Your WHOOP connection stopped working — reconnect with /connect_whoop.")
+        return
     except Exception as exc:
         logger.exception("/backfill failed for user %s", user_id)
         await send_admin_alert(f"/backfill failed for user {user_id}: {exc}")
-        await update.message.reply_text("Something went wrong pulling the data — I've flagged it.")
+        await update.message.reply_text("Something went wrong pulling WHOOP data — I've flagged it.")
+        return
+
+    from app.routes.withings_oauth import pull_withings_and_store
+    withings_written = 0
+    try:
+        withings_written = await pull_withings_and_store(user_id, days=365)
+    except Exception as exc:
+        logger.warning("/backfill Withings pull failed for user %s: %s", user_id, exc)
+
+    parts = [f"WHOOP: {written} days"]
+    if withings_written:
+        parts.append(f"Withings: {withings_written} days")
+    await update.message.reply_text(f"Done — {', '.join(parts)} loaded.")
 
 
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
