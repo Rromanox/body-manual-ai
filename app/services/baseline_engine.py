@@ -368,6 +368,10 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
             day["rem_hours"] = round(r.rem_sleep_hours, 1)
         if r.deep_sleep_hours is not None:
             day["deep_hours"] = round(r.deep_sleep_hours, 1)
+        if r.workout_count:
+            day["workout_count"] = r.workout_count
+        if r.total_workout_minutes is not None:
+            day["workout_minutes"] = round(r.total_workout_minutes, 0)
         if r.weight is not None:
             day["weight_lbs"] = round(r.weight * _KG_TO_LBS, 1)
         if r.body_fat_pct is not None:
