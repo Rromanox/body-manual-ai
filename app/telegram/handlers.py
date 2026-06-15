@@ -136,6 +136,40 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message_text)
 
 
+async def backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        connection = session.scalar(
+            select(OAuthConnection).where(
+                OAuthConnection.user_id == user.id, OAuthConnection.provider == "whoop"
+            )
+        )
+        if connection is None or connection.status != "active":
+            await update.message.reply_text("Your WHOOP isn't connected — use /connect_whoop first.")
+            return
+        user_id = user.id
+
+    await update.message.reply_text("Pulling your last 365 days from WHOOP — this may take a minute…")
+    try:
+        with SessionLocal() as session:
+            user = session.get(User, user_id)
+            written = await pull_and_store(session, user, days=365)
+        await update.message.reply_text(f"Done — {written} days of data loaded.")
+    except WhoopAuthError as exc:
+        await send_admin_alert(f"WHOOP auth failed for user {user_id} during /backfill: {exc}")
+        await update.message.reply_text("Your WHOOP connection stopped working — reconnect with /connect_whoop.")
+    except Exception as exc:
+        logger.exception("/backfill failed for user %s", user_id)
+        await send_admin_alert(f"/backfill failed for user {user_id}: {exc}")
+        await update.message.reply_text("Something went wrong pulling the data — I've flagged it.")
+
+
 async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return

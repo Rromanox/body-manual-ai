@@ -15,6 +15,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("connect_whoop", handlers.connect_whoop))
     application.add_handler(CommandHandler("today", handlers.today))
+    application.add_handler(CommandHandler("backfill", handlers.backfill))
     # No /ask command — any non-command text is a question to the coach
     # (Q&A handler itself ships in Week 2; until then a stub reply).
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.plain_text))
