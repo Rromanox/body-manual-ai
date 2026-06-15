@@ -14,6 +14,7 @@ def build_application() -> Application:
 
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("connect_whoop", handlers.connect_whoop))
+    application.add_handler(CommandHandler("connect_withings", handlers.connect_withings))
     application.add_handler(CommandHandler("today", handlers.today))
     application.add_handler(CommandHandler("checkin", handlers.checkin))
     application.add_handler(CommandHandler("weekly", handlers.weekly))

@@ -1,7 +1,7 @@
 """Scheduled morning message job.
 
-Pulls fresh WHOOP data, generates today's coach message, sends it via
-Telegram, then prompts the daily check-in for yesterday's context.
+Pulls fresh WHOOP data (and Withings body comp if connected), generates today's
+coach message, sends it via Telegram, then prompts the daily check-in.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from app.services.ai_client import generate_daily_message
 from app.services.alerts import send_admin_alert
 from app.services.observation_engine import recalculate_observations
 from app.services.baseline_engine import build_daily_snapshot, safety_message
+from app.models.daily_metric import DailyMetric
 from app.services.coach_payload_builder import build_daily_payload
 from app.services.whoop_client import WhoopAuthError
 from app.telegram.bot import get_application
@@ -50,6 +51,9 @@ async def run_daily_message() -> None:
 
 
 async def _send_for_user(user_id: int) -> None:
+    # Import here to avoid circular import (withings_oauth imports from db/models/services)
+    from app.routes.withings_oauth import pull_withings_and_store
+
     bot = get_application().bot
     with SessionLocal() as session:
         user = session.get(User, user_id)
@@ -78,7 +82,12 @@ async def _send_for_user(user_id: int) -> None:
             )
         )
         yesterday_tags = list(yesterday_entry.tags or []) if yesterday_entry else []
-        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags)
+        today_row = session.scalar(
+            select(DailyMetric).where(
+                DailyMetric.user_id == user.id, DailyMetric.date == target_date
+            )
+        )
+        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags, today_metric_row=today_row)
 
         try:
             message_text = await generate_daily_message(payload)
@@ -101,9 +110,15 @@ async def _send_for_user(user_id: int) -> None:
         session.commit()
         telegram_id = user.telegram_id
 
+    # Withings pull is non-fatal — missing body comp is fine, WHOOP still runs
+    try:
+        await pull_withings_and_store(user_id, days=7)
+    except Exception as exc:
+        logger.warning("Withings pull skipped for user %s: %s", user_id, exc)
+
     await bot.send_message(chat_id=telegram_id, text=message_text)
     await bot.send_message(
         chat_id=telegram_id,
-        text=f"How was yesterday? Tap any that apply:",
+        text="How was yesterday? Tap any that apply:",
         reply_markup=checkin_keyboard(set()),
     )

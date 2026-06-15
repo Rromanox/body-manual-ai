@@ -28,6 +28,8 @@ class Settings:
     )
     whoop_client_id: str = field(default_factory=lambda: os.getenv("WHOOP_CLIENT_ID", ""))
     whoop_client_secret: str = field(default_factory=lambda: os.getenv("WHOOP_CLIENT_SECRET", ""))
+    withings_client_id: str = field(default_factory=lambda: os.getenv("WITHINGS_CLIENT_ID", ""))
+    withings_client_secret: str = field(default_factory=lambda: os.getenv("WITHINGS_CLIENT_SECRET", ""))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     base_url: str = field(default_factory=lambda: os.getenv("BASE_URL", "http://localhost:8000").rstrip("/"))

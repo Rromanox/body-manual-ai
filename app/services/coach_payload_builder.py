@@ -8,12 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models.daily_metric import DailyMetric
 from app.models.user import User
 from app.services.baseline_engine import DailySnapshot, MetricSummary, QAContext, WeeklySnapshot
 
 
 def build_daily_payload(
-    user: User, snapshot: DailySnapshot, yesterday_tags: list[str] | None = None
+    user: User,
+    snapshot: DailySnapshot,
+    yesterday_tags: list[str] | None = None,
+    today_metric_row: DailyMetric | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "user_goal": user.goal or "general_health",
@@ -39,6 +43,24 @@ def build_daily_payload(
         }
     if yesterday_tags:
         payload["yesterday_tags"] = yesterday_tags
+    if today_metric_row is not None:
+        body_comp: dict[str, Any] = {}
+        if today_metric_row.weight is not None:
+            body_comp["weight_kg"] = _round1(today_metric_row.weight)
+        if today_metric_row.body_fat_pct is not None:
+            body_comp["body_fat_pct"] = _round1(today_metric_row.body_fat_pct)
+        if today_metric_row.muscle_mass is not None:
+            body_comp["muscle_mass_kg"] = _round1(today_metric_row.muscle_mass)
+        if today_metric_row.fat_free_mass is not None:
+            body_comp["fat_free_mass_kg"] = _round1(today_metric_row.fat_free_mass)
+        if today_metric_row.water_pct is not None:
+            body_comp["hydration_pct"] = _round1(today_metric_row.water_pct)
+        if today_metric_row.bone_mass is not None:
+            body_comp["bone_mass_kg"] = _round1(today_metric_row.bone_mass)
+        if today_metric_row.bmi is not None:
+            body_comp["bmi"] = _round1(today_metric_row.bmi)
+        if body_comp:
+            payload["body_composition"] = body_comp
     return payload
 
 

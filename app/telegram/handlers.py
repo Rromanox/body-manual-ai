@@ -30,6 +30,7 @@ from app.services.baseline_engine import (
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.observation_engine import recalculate_observations
 from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
+from app.services.withings_client import build_authorize_url as withings_authorize_url
 from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,18 @@ async def connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     url = build_authorize_url(make_oauth_state(update.effective_user.id))
     await update.message.reply_text(f"Tap to connect your WHOOP:\n\n{url}")
+
+
+async def connect_withings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == update.effective_user.id))
+    if user is None:
+        await update.message.reply_text("Run /start first so I can set you up.")
+        return
+    url = withings_authorize_url(make_oauth_state(update.effective_user.id))
+    await update.message.reply_text(f"Tap to connect your Withings scale:\n\n{url}")
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,7 +134,13 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         )
         yesterday_tags = list(yesterday_entry.tags or []) if yesterday_entry else []
-        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags)
+        from app.models.daily_metric import DailyMetric
+        today_row = session.scalar(
+            select(DailyMetric).where(
+                DailyMetric.user_id == user.id, DailyMetric.date == target_date
+            )
+        )
+        payload = build_daily_payload(user, snapshot, yesterday_tags=yesterday_tags, today_metric_row=today_row)
 
         try:
             message_text = await generate_daily_message(payload)

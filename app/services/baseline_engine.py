@@ -312,6 +312,9 @@ def build_qa_context(session: Session, user_id: int, target_date: date) -> QACon
         "hrv_ms": DailyMetric.hrv_ms,
         "resting_hr": DailyMetric.resting_heart_rate,
         "strain": DailyMetric.strain,
+        "weight_kg": DailyMetric.weight,
+        "body_fat_pct": DailyMetric.body_fat_pct,
+        "muscle_mass_kg": DailyMetric.muscle_mass,
     }
     avg_7d = {k: _avg(session, user_id, col, week_start, yesterday) for k, col in metric_cols.items()}
     avg_30d = {k: _avg(session, user_id, col, month_start, yesterday) for k, col in metric_cols.items()}
