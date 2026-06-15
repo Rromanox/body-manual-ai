@@ -20,6 +20,7 @@ from app.models.oauth_connection import OAuthConnection
 from app.models.user import User
 from app.services.ai_client import generate_daily_message
 from app.services.alerts import send_admin_alert
+from app.services.chat_logger import log_outgoing
 from app.services.observation_engine import recalculate_observations
 from app.services.baseline_engine import build_daily_snapshot, get_checkin_streak, safety_message
 from app.models.daily_metric import DailyMetric
@@ -173,6 +174,7 @@ async def _send_for_user(user_id: int) -> None:
         telegram_id = user.telegram_id
 
     await bot.send_message(chat_id=telegram_id, text=message_text)
+    log_outgoing(telegram_id, message_text, "ai_daily", user_id=user_id)
     await bot.send_message(
         chat_id=telegram_id,
         text="How was yesterday? Tap any that apply:",

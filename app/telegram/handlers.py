@@ -29,6 +29,7 @@ from app.services.baseline_engine import (
     safety_message,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
+from app.services.chat_logger import log_outgoing
 from app.services.observation_engine import recalculate_observations
 from app.services.experiment_engine import (
     end_experiment,
@@ -201,6 +202,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         session.commit()
 
     await update.message.reply_text(message_text)
+    log_outgoing(telegram_id, message_text, "ai_daily")
 
 
 async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -332,6 +334,7 @@ async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         session.commit()
 
     await update.message.reply_text(message_text)
+    log_outgoing(telegram_id, message_text, "ai_weekly")
 
 
 async def goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -421,6 +424,7 @@ async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text(text)
+    log_outgoing(telegram_id, text, "ai_focus")
 
 
 async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -778,6 +782,69 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 session.commit()
 
     await update.message.reply_text(response_text)
+    log_outgoing(telegram_id, response_text, "q_and_a")
+
+
+async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show recent chat history (both directions) for debugging and review."""
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+
+    # Optional arg: number of messages to show (default 30, max 100)
+    try:
+        limit = min(int((context.args or ["30"])[0]), 100)
+    except (ValueError, IndexError):
+        limit = 30
+
+    from app.models.message_log import MessageLog as _ML
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(_ML)
+            .where(_ML.telegram_id == telegram_id)
+            .order_by(_ML.created_at.desc())
+            .limit(limit)
+        ).all()
+
+    if not rows:
+        await update.message.reply_text("No chat history yet.")
+        return
+
+    TYPE_EMOJI = {
+        "command": "⌨️",
+        "q_and_a": "💬",
+        "ai_daily": "🌅",
+        "ai_weekly": "📊",
+        "ai_focus": "🎯",
+        "checkin": "✅",
+        "system": "⚙️",
+        "error": "❌",
+    }
+    lines = [f"*Chat log — last {min(limit, len(rows))} messages*\n"]
+    for row in reversed(rows):
+        ts = row.created_at.strftime("%b %d %H:%M") if row.created_at else "?"
+        icon = "👤" if row.direction == "in" else "🤖"
+        type_tag = TYPE_EMOJI.get(row.message_type, "")
+        # Truncate long AI messages to keep the log readable
+        content = row.content
+        if row.direction == "out" and len(content) > 200:
+            content = content[:200] + "…"
+        lines.append(f"[{ts}] {icon}{type_tag} {content}")
+
+    # Telegram has a 4096 char limit — split if needed
+    text = "\n".join(lines)
+    if len(text) <= 4000:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    else:
+        # Send in chunks
+        chunk: list[str] = [lines[0]]
+        for line in lines[1:]:
+            if sum(len(l) + 1 for l in chunk) + len(line) > 3800:
+                await update.message.reply_text("\n".join(chunk), parse_mode="Markdown")
+                chunk = []
+            chunk.append(line)
+        if chunk:
+            await update.message.reply_text("\n".join(chunk), parse_mode="Markdown")
 
 
 async def _run_observation_recalc(user_id: int) -> None:
