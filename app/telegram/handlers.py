@@ -62,10 +62,7 @@ async def connect_whoop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Run /start first so I can set you up.")
         return
     url = build_authorize_url(make_oauth_state(update.effective_user.id))
-    await update.message.reply_text(
-        "Tap to connect your WHOOP (open this on the machine where the app is running, "
-        f"or use a tunnel URL — see README):\n\n{url}"
-    )
+    await update.message.reply_text(f"Tap to connect your WHOOP:\n\n{url}")
 
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
