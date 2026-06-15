@@ -20,6 +20,7 @@ from app.models.oauth_connection import OAuthConnection
 from app.models.user import User
 from app.services.ai_client import generate_daily_message
 from app.services.alerts import send_admin_alert
+from app.services.observation_engine import recalculate_observations
 from app.services.baseline_engine import build_daily_snapshot, safety_message
 from app.services.coach_payload_builder import build_daily_payload
 from app.services.whoop_client import WhoopAuthError
@@ -57,6 +58,7 @@ async def _send_for_user(user_id: int) -> None:
 
         try:
             await pull_and_store(session, user, days=7)
+            recalculate_observations(session, user_id)
         except WhoopAuthError as exc:
             await send_admin_alert(f"WHOOP auth expired for user {user_id} during morning pull: {exc}")
             return

@@ -9,6 +9,8 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+import asyncio
+
 from app.config import settings
 from app.db import SessionLocal
 from app.jobs.daily_pull import pull_and_store
@@ -26,6 +28,7 @@ from app.services.baseline_engine import (
     safety_message,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
+from app.services.observation_engine import recalculate_observations
 from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
 from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard
 
@@ -182,6 +185,7 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     reply_text: str | None = None
     new_keyboard = None
+    recalc_user_id: int | None = None
 
     with SessionLocal() as session:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))
@@ -197,6 +201,7 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if data in ("ci_done", "ci_feel_skip"):
             tags = list(entry.tags or []) if entry else []
             reply_text = f"Saved ✓ — {', '.join(tags) if tags else 'nothing notable yesterday'}."
+            recalc_user_id = user.id
 
         elif data == "ci_none":
             if entry is None:
@@ -233,6 +238,9 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text(reply_text)
     elif new_keyboard:
         await query.edit_message_reply_markup(reply_markup=new_keyboard)
+
+    if recalc_user_id:
+        asyncio.create_task(_run_observation_recalc(recalc_user_id))
 
 
 async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -452,6 +460,14 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 session.commit()
 
     await update.message.reply_text(response_text)
+
+
+async def _run_observation_recalc(user_id: int) -> None:
+    try:
+        with SessionLocal() as session:
+            recalculate_observations(session, user_id)
+    except Exception:
+        logger.exception("Observation recalc failed for user %s", user_id)
 
 
 def _today_local(user: User) -> date:
