@@ -57,8 +57,6 @@ def build_daily_payload(
             body_comp["hydration_pct"] = _round1(today_metric_row.water_pct)
         if today_metric_row.bone_mass is not None:
             body_comp["bone_mass_kg"] = _round1(today_metric_row.bone_mass)
-        if today_metric_row.bmi is not None:
-            body_comp["bmi"] = _round1(today_metric_row.bmi)
         if body_comp:
             payload["body_composition"] = body_comp
     return payload

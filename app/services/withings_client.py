@@ -26,15 +26,16 @@ REFRESH_MARGIN = timedelta(minutes=5)
 HTTP_TIMEOUT = 30.0
 
 # Withings measurement type IDs → DailyMetric column name
+# Standard body composition types from Withings Body+ / Body Cardio scales:
+#   1=Weight, 5=Fat Free Mass, 6=Fat Ratio%, 76=Muscle Mass,
+#   77=Hydration%, 88=Bone Mass
 MEAS_TYPES: dict[int, str] = {
     1: "weight",
+    5: "fat_free_mass",
     6: "body_fat_pct",
-    8: "bmi",
     76: "muscle_mass",
     77: "water_pct",
-    5: "fat_free_mass",
-    88: "fat_free_mass",   # fat free mass (alternate type)
-    226: "bone_mass",
+    88: "bone_mass",
 }
 
 logger = logging.getLogger(__name__)
