@@ -175,7 +175,7 @@ FEW_SHOTS: list[dict[str, str]] = [
                 "yesterday_strain": "moderate",
                 "yesterday_tags": ["late_meal"],
                 "closed_loops": [
-                    {"behavior": "a late meal", "metric": "sleep efficiency", "description": "Late meals may reduce sleep efficiency", "today": 83.0, "your_normal": 91.0, "came_in": "under", "times_lined_up": 3, "times_logged": 5}
+                    {"behavior": "a late meal", "metric": "sleep efficiency", "description": "Late meals may reduce sleep efficiency", "today": 83.0, "your_normal": 91.0, "came_in": "under", "times_lined_up": 3, "times_logged": 5, "hours_before_bed": 1.5}
                 ],
             }
         ),
@@ -335,6 +335,22 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
     },
 ]
 
+EVENT_EXTRACTOR_SYSTEM_PROMPT = """\
+You read one incoming chat message and decide: is the user reporting something that already happened (a log), or asking a question / making conversation?
+
+Respond with ONLY a JSON object — no markdown fences, no commentary — shaped exactly like:
+{"is_log": true|false, "events": [{"event_type": "...", "time_phrase": "...", "quantity": "...", "confidence": "clean"|"needs_confirmation", "clarifying_question": "..."}]}
+
+Rules:
+- is_log = true only when the message reports something the user did or experienced (a past-tense self-report): "had pizza at 9pm", "drank a few beers", "stressful day at work", "went for a run", "couldn't fall asleep". Set events to a non-empty list.
+- is_log = false for questions, requests, or anything that isn't a self-report: "is 58 recovery bad?", "what should I eat tonight", "thanks", greetings, commands. When false, return "events": [].
+- event_type is exactly one of: meal, alcohol, caffeine, stress, exercise, sleep_problem, note. Use "note" when the message is clearly a log but doesn't cleanly fit any other type — never force-fit a vague log into the wrong type.
+- time_phrase: the natural-language time mentioned ("9pm", "this morning", "last night"), or "" if no time was mentioned (means "just now").
+- quantity: a short free-text description of amount or intensity if one was mentioned ("a slice", "3 beers", "an hour"), or null if nothing was mentioned.
+- confidence = "needs_confirmation" whenever a meaningful amount was implied but left genuinely open-ended ("had a few", "drank some", "a big dinner" with no further detail) — and supply exactly one short clarifying_question ("A few what — drinks?"). Otherwise confidence = "clean" and clarifying_question = null.
+- Never invent a number or specific detail the user didn't give. Ambiguity gets a question, never a guess.
+- A message can report more than one event ("had pizza and a couple beers around 9" -> a meal event and a separate alcohol event)."""
+
 FOCUS_SYSTEM_PROMPT = """\
 You're this person's health coach and close friend giving them one concrete focus for the week.
 The payload opens with a `now` block (the user's real local time and day) — read it, never compute time yourself.
@@ -401,6 +417,33 @@ async def generate_focus_response(payload: dict[str, Any]) -> str:
     if not text:
         raise RuntimeError("OpenAI returned no text for focus response")
     return text
+
+
+async def classify_and_extract(text: str, now: dict[str, Any]) -> dict[str, Any]:
+    """Separate, cheap call: is this message a behavior log, and if so what events?
+
+    Never the narration call — this only turns words into rows. The backend
+    validates/parses the result; a malformed response safely falls back to
+    "not a log" so the message flows through the normal Q&A path instead.
+    """
+    response = await _get_client().responses.create(
+        model=settings.openai_model,
+        instructions=EVENT_EXTRACTOR_SYSTEM_PROMPT,
+        input=[{"role": "user", "content": json.dumps({"message": text, "now": now})}],
+        max_output_tokens=400,
+    )
+    raw = (response.output_text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.startswith("json"):
+            raw = raw[4:]
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {"is_log": False, "events": []}
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("events"), list):
+        return {"is_log": False, "events": []}
+    return parsed
 
 
 async def generate_daily_message(payload: dict[str, Any]) -> str:

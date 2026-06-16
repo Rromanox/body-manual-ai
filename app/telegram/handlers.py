@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete as sql_delete, select
@@ -15,11 +15,12 @@ from app.config import settings
 from app.db import SessionLocal
 from app.jobs.daily_pull import pull_and_store
 from app.models.coach_message import CoachMessage
+from app.models.event import Event
 from app.models.journal_entry import JournalEntry
 from app.models.oauth_connection import OAuthConnection
 from app.models.observation import Observation
 from app.models.user import User
-from app.services.ai_client import generate_daily_message, generate_focus_response, generate_qa_response, generate_weekly_message
+from app.services.ai_client import classify_and_extract, generate_daily_message, generate_focus_response, generate_qa_response, generate_weekly_message
 from app.services.alerts import send_admin_alert
 from app.services.baseline_engine import (
     build_daily_snapshot,
@@ -31,9 +32,10 @@ from app.services.baseline_engine import (
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.chat_logger import log_outgoing
+from app.services.event_engine import EVENT_TYPES, apply_event_to_tags, enrich_closed_loops_with_meal_gap
 from app.services.observation_engine import build_closed_loops, recalculate_observations
 from app.services.supplement_engine import get_today_log, mark_taken
-from app.services.timekit import get_user_now, get_user_today, now_block
+from app.services.timekit import get_user_now, get_user_today, now_block, resolve_local_time
 from app.services.experiment_engine import (
     end_experiment,
     format_experiment_text,
@@ -183,6 +185,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         streak = get_checkin_streak(session, user.id, target_date)
         previous_message = get_previous_daily_message(session, user.id, target_date)
         closed_loops = build_closed_loops(session, user.id, target_date, yesterday_tags)
+        enrich_closed_loops_with_meal_gap(session, user.id, target_date, closed_loops, today_row)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
@@ -833,6 +836,21 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     telegram_id = update.effective_user.id
 
+    clarify_id_str = context.user_data.pop("clarify_event_id", None)
+    if clarify_id_str:
+        with SessionLocal() as session:
+            ev = session.get(Event, int(clarify_id_str))
+            if ev is not None:
+                structured = dict(ev.structured or {})
+                structured["quantity"] = question
+                structured["clarified"] = True
+                ev.structured = structured
+                ev.confidence = "clean"
+                session.commit()
+        await update.message.reply_text("Got it ✓")
+        log_outgoing(telegram_id, "Got it ✓", "event_log")
+        return
+
     note_date_str = context.user_data.pop("awaiting_note_date", None)
     if note_date_str:
         note_date = date.fromisoformat(note_date_str)
@@ -856,6 +874,19 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         log_outgoing(telegram_id, "Noted ✓", "checkin")
         asyncio.create_task(_run_observation_recalc(recalc_user_id))
         return
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+    if user is not None:
+        now = get_user_now(user)
+        try:
+            extraction = await classify_and_extract(question, now_block(user, now))
+        except Exception:
+            logger.exception("Event extraction failed for user %s", user.id)
+            extraction = {"is_log": False, "events": []}
+        if extraction.get("is_log") and extraction.get("events"):
+            await _handle_logged_events(update, context, user, now, extraction["events"], question)
+            return
 
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
 
@@ -998,6 +1029,81 @@ async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chunk.append(line)
     if chunk:
         await _send("\n".join(chunk))
+
+
+_EVENT_TYPE_LABEL = {
+    "meal": "a meal",
+    "alcohol": "a drink",
+    "caffeine": "caffeine",
+    "stress": "stress",
+    "exercise": "a workout",
+    "sleep_problem": "a sleep issue",
+    "note": "that",
+}
+
+
+def _confirm_event_text(event_types: list[str]) -> str:
+    labels = [_EVENT_TYPE_LABEL.get(t, t) for t in event_types]
+    return f"Logged ✓ — {', '.join(labels)}."
+
+
+async def _handle_logged_events(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+    now: datetime,
+    events: list[dict],
+    raw_text: str,
+) -> None:
+    """Persist extracted events, roll them into the existing tag vocabulary, and
+    either confirm the log or ask the one allowed clarifying question."""
+    telegram_id = user.telegram_id
+    clarifying_question: str | None = None
+    clarify_event_id: int | None = None
+    saved_types: list[str] = []
+    recalc_user_id: int | None = None
+
+    with SessionLocal() as session:
+        for e in events:
+            event_type = e.get("event_type") or "note"
+            if event_type not in EVENT_TYPES:
+                event_type = "note"
+            time_phrase = e.get("time_phrase") or ""
+            occurred_at = resolve_local_time(time_phrase, now) or now
+            confidence = "needs_confirmation" if e.get("confidence") == "needs_confirmation" else "clean"
+
+            row = Event(
+                user_id=user.id,
+                occurred_at=occurred_at,
+                local_date=occurred_at.date(),
+                event_type=event_type,
+                raw_text=raw_text,
+                structured={"quantity": e.get("quantity"), "time_phrase": time_phrase},
+                confidence=confidence,
+                source="chat",
+            )
+            session.add(row)
+            session.flush()
+            saved_types.append(event_type)
+            apply_event_to_tags(session, user.id, event_type, occurred_at)
+
+            if confidence == "needs_confirmation" and clarifying_question is None:
+                clarifying_question = e.get("clarifying_question") or "Can you say a bit more about that?"
+                clarify_event_id = row.id
+
+        session.commit()
+        recalc_user_id = user.id
+
+    if clarifying_question:
+        context.user_data["clarify_event_id"] = str(clarify_event_id)
+        await update.message.reply_text(clarifying_question)
+        log_outgoing(telegram_id, clarifying_question, "event_log", user_id=user.id)
+    else:
+        reply = _confirm_event_text(saved_types)
+        await update.message.reply_text(reply)
+        log_outgoing(telegram_id, reply, "event_log", user_id=user.id)
+
+    asyncio.create_task(_run_observation_recalc(recalc_user_id))
 
 
 async def _run_observation_recalc(user_id: int) -> None:
