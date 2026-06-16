@@ -1,0 +1,46 @@
+name: Notify Telegram on push
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.ADMIN_TELEGRAM_ID }}
+          COMMITS_JSON: ${{ toJson(github.event.commits) }}
+          COMPARE_URL: ${{ github.event.compare }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request, urllib.parse
+
+          commits = json.loads(os.environ["COMMITS_JSON"])
+          lines = []
+          for c in commits:
+              sha = c["id"][:7]
+              msg = c["message"].split("\n")[0]
+              lines.append(f"• `{sha}` {msg}")
+
+          body = "\n".join(lines)
+          compare = os.environ["COMPARE_URL"]
+          text = f"\U0001f680 *Deployed to Railway*\n\n{body}\n\n[View diff]({compare})"
+
+          data = urllib.parse.urlencode({
+              "chat_id": os.environ["CHAT_ID"],
+              "text": text,
+              "parse_mode": "Markdown",
+              "disable_web_page_preview": "true",
+          }).encode()
+
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
+              data=data,
+          )
+          with urllib.request.urlopen(req) as resp:
+              result = json.loads(resp.read())
+              print("ok" if result.get("ok") else f"error: {result}")
+          EOF
