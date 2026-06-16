@@ -6,11 +6,13 @@ already a flag.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.models.daily_metric import DailyMetric
 from app.models.user import User
 from app.services.baseline_engine import DailySnapshot, MetricSummary, QAContext, WeeklySnapshot, get_checkin_streak
+from app.services.timekit import now_block
 
 
 def build_daily_payload(
@@ -19,11 +21,12 @@ def build_daily_payload(
     yesterday_tags: list[str] | None = None,
     today_metric_row: DailyMetric | None = None,
     checkin_streak: int = 0,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "now": now_block(user, now),
         "user_name": user.first_name or None,
         "user_goal": user.goal or "general_health",
-        "day_of_week": snapshot.target_date.strftime("%A"),
         "data_days_available": snapshot.data_days_available,
         "data_maturity": snapshot.data_maturity,
         "today_recovery_missing": snapshot.recovery.today is None,
@@ -94,8 +97,11 @@ def build_daily_payload(
     return payload
 
 
-def build_weekly_payload(user: User, snapshot: WeeklySnapshot) -> dict[str, Any]:
+def build_weekly_payload(
+    user: User, snapshot: WeeklySnapshot, now: datetime | None = None
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
+        "now": now_block(user, now),
         "user_goal": user.goal or "general_health",
         "period_days": 7,
         "data_days_available": snapshot.data_days_available,
@@ -121,12 +127,15 @@ def build_weekly_payload(user: User, snapshot: WeeklySnapshot) -> dict[str, Any]
     return payload
 
 
-def build_qa_payload(question: str, context: QAContext) -> dict[str, Any]:
+def build_qa_payload(
+    question: str, context: QAContext, now: dict[str, Any] | None = None
+) -> dict[str, Any]:
     def _r(v: float | None) -> float | None:
         return round(v, 1) if v is not None else None
 
     return {
         "question": question,
+        "now": now or {},
         "user_name": context.user_name or None,
         "today_date": context.today_date,
         "data_days_available": context.data_days_available,

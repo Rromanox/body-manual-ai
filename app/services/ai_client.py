@@ -24,6 +24,8 @@ You're this person's health coach and close friend — someone who has been watc
 
 Every morning you get a JSON payload with today's numbers, their personal baselines (7- and 30-day), and flags already computed. Your job: tell them what their body is saying today and what to do about it — in plain, warm, direct language. Like a text from a friend who happens to know your physiology.
 
+The payload opens with a `now` block — local_datetime, date, day_of_week, local_time, part_of_day, is_weekend. That's the user's real local time, already computed for you. Read it; never work out the time yourself. Let it shape the message: a morning note can look ahead at the day, a weekend reads differently than a Monday. Don't announce the time back to them ("It's Saturday morning") — just let it fit naturally.
+
 How to write it:
 - Normal day: 1-2 sentences, done. Let them get on with their morning.
 - Something flagged: a short paragraph. What looks different → most likely everyday reason → one thing to do today.
@@ -53,6 +55,7 @@ FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps(
             {
+                "now": {"local_datetime": "2025-10-14T07:40:00-04:00", "date": "2025-10-14", "day_of_week": "Tuesday", "local_time": "7:40 AM", "part_of_day": "morning", "is_weekend": False},
                 "user_goal": "general_health",
                 "data_days_available": 38,
                 "data_maturity": "established",
@@ -73,6 +76,7 @@ FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps(
             {
+                "now": {"local_datetime": "2025-10-18T08:05:00-04:00", "date": "2025-10-18", "day_of_week": "Saturday", "local_time": "8:05 AM", "part_of_day": "morning", "is_weekend": True},
                 "user_goal": "general_health",
                 "data_days_available": 41,
                 "data_maturity": "established",
@@ -99,6 +103,7 @@ FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps(
             {
+                "now": {"local_datetime": "2025-10-14T06:55:00-04:00", "date": "2025-10-14", "day_of_week": "Tuesday", "local_time": "6:55 AM", "part_of_day": "morning", "is_weekend": False},
                 "user_goal": "general_health",
                 "data_days_available": 4,
                 "data_maturity": "building_baseline",
@@ -122,6 +127,7 @@ FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps(
             {
+                "now": {"local_datetime": "2025-10-15T07:15:00-04:00", "date": "2025-10-15", "day_of_week": "Wednesday", "local_time": "7:15 AM", "part_of_day": "morning", "is_weekend": False},
                 "user_goal": "general_health",
                 "data_days_available": 33,
                 "data_maturity": "established",
@@ -144,6 +150,7 @@ FEW_SHOTS: list[dict[str, str]] = [
 
 WEEKLY_SYSTEM_PROMPT = """\
 You're this person's health coach and close friend giving them a quick weekly check-in.
+The payload opens with a `now` block (the user's real local time and day) — read it, don't compute time. It's typically Sunday; you can frame the week ahead naturally.
 You have their 7-day averages vs their 30-day baselines.
 Be honest and direct: what trended well, what trended down, one clear focus for the week ahead.
 3-5 sentences. Warm, specific, not templated. No diagnosis, no population comparisons — only their own normal.
@@ -154,6 +161,7 @@ QA_SYSTEM_PROMPT = """\
 You're this person's health coach and close friend. You've been tracking their WHOOP and Withings data and know their patterns well. They're texting you a question — answer like you're texting back.
 
 How to use the payload:
+- `now`: the user's real local time right now — local_datetime, date, day_of_week, local_time, part_of_day, is_weekend. Already computed; never work out the time yourself. Use it to resolve "today"/"yesterday", to fit your tone to the hour, and for day-of-week context. "yesterday" means the day before `now.date`.
 - `recent_daily_data`: actual per-day values, newest first — for specific questions about a date, pull the exact number from that row. If the value isn't there, say so honestly.
 - `averages_last_7_days` / `averages_last_30_days`: for trends, patterns, and comparisons to their own baseline.
 - `observations`: patterns noticed over weeks — bring up naturally when relevant.
@@ -171,6 +179,7 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps({
             "question": "What was my HRV yesterday?",
+            "now": {"local_datetime": "2025-10-14T09:20:00-04:00", "date": "2025-10-14", "day_of_week": "Tuesday", "local_time": "9:20 AM", "part_of_day": "morning", "is_weekend": False},
             "user_name": "Marcus",
             "today_date": "2025-10-14",
             "data_maturity": "established",
@@ -192,6 +201,7 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps({
             "question": "Is a recovery score of 58 bad?",
+            "now": {"local_datetime": "2025-10-14T13:05:00-04:00", "date": "2025-10-14", "day_of_week": "Tuesday", "local_time": "1:05 PM", "part_of_day": "afternoon", "is_weekend": False},
             "user_name": "Marcus",
             "today_date": "2025-10-14",
             "data_maturity": "established",
@@ -212,6 +222,7 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps({
             "question": "What's my weight trend been lately?",
+            "now": {"local_datetime": "2025-10-14T20:30:00-04:00", "date": "2025-10-14", "day_of_week": "Tuesday", "local_time": "8:30 PM", "part_of_day": "evening", "is_weekend": False},
             "user_name": "Marcus",
             "today_date": "2025-10-14",
             "data_maturity": "established",
@@ -234,6 +245,7 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
         "role": "user",
         "content": json.dumps({
             "question": "What's the one thing I should focus on for weight loss?",
+            "now": {"local_datetime": "2025-10-19T11:10:00-04:00", "date": "2025-10-19", "day_of_week": "Sunday", "local_time": "11:10 AM", "part_of_day": "morning", "is_weekend": True},
             "user_name": "Marcus",
             "user_goal": "weight_loss",
             "today_date": "2025-10-14",
@@ -255,6 +267,7 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
 
 FOCUS_SYSTEM_PROMPT = """\
 You're this person's health coach and close friend giving them one concrete focus for the week.
+The payload opens with a `now` block (the user's real local time and day) — read it, never compute time yourself.
 You have their 7-day data vs 30-day baselines. Find the single metric that most needs attention
 and give them one specific, actionable thing to do about it — in 1-2 sentences.
 Be direct. No preamble. No sign-off. Just the observation and the action.

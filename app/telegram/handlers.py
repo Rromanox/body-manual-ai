@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import delete as sql_delete, select
 from telegram import Update
@@ -31,6 +31,7 @@ from app.services.baseline_engine import (
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.chat_logger import log_outgoing
 from app.services.observation_engine import recalculate_observations
+from app.services.timekit import get_user_now, get_user_today, now_block
 from app.services.experiment_engine import (
     end_experiment,
     format_experiment_text,
@@ -154,7 +155,8 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-        target_date = _today_local(user)
+        now = get_user_now(user)
+        target_date = now.date()
         yesterday = target_date - timedelta(days=1)
         snapshot = build_daily_snapshot(session, user.id, target_date)
         yesterday_entry = session.scalar(
@@ -173,7 +175,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         streak = get_checkin_streak(session, user.id, target_date)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
-            today_metric_row=today_row, checkin_streak=streak,
+            today_metric_row=today_row, checkin_streak=streak, now=now,
         )
 
         try:
@@ -313,9 +315,10 @@ async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("Connect your WHOOP first with /connect_whoop.")
             return
 
-        target_date = _today_local(user)
+        now = get_user_now(user)
+        target_date = now.date()
         snapshot = build_weekly_snapshot(session, user.id, target_date)
-        payload = build_weekly_payload(user, snapshot)
+        payload = build_weekly_payload(user, snapshot, now=now)
 
         try:
             message_text = await generate_weekly_message(payload)
@@ -372,6 +375,46 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.edit_message_text(f"Goal updated to: {labels[new_goal]}. Your morning messages will reflect this.")
 
 
+async def timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View or set the user's IANA timezone. /timezone America/New_York"""
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    arg = (context.args or [""])[0].strip()
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+
+        if not arg:
+            now = get_user_now(user)
+            await update.message.reply_text(
+                f"Your timezone is {user.timezone}.\n"
+                f"Local time right now: {now.strftime('%A')} {now.strftime('%I:%M %p').lstrip('0')}.\n\n"
+                "To change it, send an IANA name, e.g.\n/timezone America/New_York"
+            )
+            return
+
+        try:
+            ZoneInfo(arg)
+        except (ZoneInfoNotFoundError, ValueError):
+            await update.message.reply_text(
+                f"'{arg}' isn't a valid timezone name. Use an IANA name like "
+                "America/New_York, America/Chicago, or Europe/London."
+            )
+            return
+
+        user.timezone = arg
+        session.commit()
+        now = get_user_now(user)
+    await update.message.reply_text(
+        f"Timezone set to {arg}. Local time now: {now.strftime('%A')} "
+        f"{now.strftime('%I:%M %p').lstrip('0')}."
+    )
+
+
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
@@ -412,9 +455,10 @@ async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _has_active_whoop(session, user.id):
             await update.message.reply_text("Connect your WHOOP first with /connect_whoop.")
             return
-        target_date = _today_local(user)
+        now = get_user_now(user)
+        target_date = now.date()
         snapshot = build_weekly_snapshot(session, user.id, target_date)
-        payload = build_weekly_payload(user, snapshot)
+        payload = build_weekly_payload(user, snapshot, now=now)
 
     try:
         text = await generate_focus_response(payload)
@@ -730,9 +774,10 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
             return
 
-        target_date = _today_local(user)
+        now = get_user_now(user)
+        target_date = now.date()
         qa_ctx = build_qa_context(session, user.id, target_date, user=user)
-        payload = build_qa_payload(question, qa_ctx)
+        payload = build_qa_payload(question, qa_ctx, now=now_block(user, now))
         user_id = user.id
 
         # Last 5 Q&A exchanges as conversation history so the AI remembers the thread
@@ -868,7 +913,8 @@ async def _run_observation_recalc(user_id: int) -> None:
 
 
 def _today_local(user: User) -> date:
-    return datetime.now(ZoneInfo(user.timezone)).date()
+    # Thin wrapper kept for existing call sites; the clock lives in timekit.
+    return get_user_today(user)
 
 
 def _has_active_whoop(session, user_id: int) -> bool:

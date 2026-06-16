@@ -59,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("experiment", "Start or check an experiment"),
         # Account & setup
         BotCommand("goal", "View or change your coaching goal"),
+        BotCommand("timezone", "View or change your timezone"),
         BotCommand("connect_whoop", "Connect your WHOOP account"),
         BotCommand("connect_withings", "Connect your Withings scale"),
         BotCommand("backfill", "Re-pull 365 days of WHOOP + Withings data"),
@@ -68,10 +69,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.default_timezone))
+    # Fire every hour on the hour. run_daily_message decides per user whether
+    # their LOCAL send-time has arrived — tz-aware and DST-correct via zoneinfo,
+    # not a hardcoded UTC hour. max_instances > 1 so one user's in-progress
+    # retry loop never blocks the tick that serves a user in another timezone.
     scheduler.add_job(
         run_daily_message,
-        CronTrigger(hour=settings.daily_pull_hour, minute=0),
+        CronTrigger(minute=0),
         id="daily_morning_message",
+        max_instances=6,
+        coalesce=True,
+        misfire_grace_time=600,
     )
     scheduler.start()
 

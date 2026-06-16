@@ -34,7 +34,9 @@ class Settings:
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     base_url: str = field(default_factory=lambda: os.getenv("BASE_URL", "http://localhost:8000").rstrip("/"))
     secret_key: str = field(default_factory=lambda: os.getenv("SECRET_KEY", ""))
-    default_timezone: str = field(default_factory=lambda: os.getenv("DEFAULT_TIMEZONE", "UTC"))
+    # IANA timezone NAME (never a fixed offset) so zoneinfo handles DST. New
+    # users default to this; it's also the scheduler's reference tz.
+    default_timezone: str = field(default_factory=lambda: os.getenv("DEFAULT_TIMEZONE", "America/Detroit"))
     daily_pull_hour: int = field(default_factory=lambda: int(os.getenv("DAILY_PULL_HOUR", "6")))
 
 
