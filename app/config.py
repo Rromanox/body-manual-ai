@@ -38,6 +38,9 @@ class Settings:
     # users default to this; it's also the scheduler's reference tz.
     default_timezone: str = field(default_factory=lambda: os.getenv("DEFAULT_TIMEZONE", "America/Detroit"))
     daily_pull_hour: int = field(default_factory=lambda: int(os.getenv("DAILY_PULL_HOUR", "6")))
+    # SPEC §8: weekly summary "sent Sunday evening" — local hour, same gating
+    # style as daily_pull_hour.
+    weekly_send_hour: int = field(default_factory=lambda: int(os.getenv("WEEKLY_SEND_HOUR", "18")))
 
 
 settings = Settings()

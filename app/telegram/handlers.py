@@ -44,7 +44,13 @@ from app.services.experiment_engine import (
 )
 from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
 from app.services.withings_client import build_authorize_url as withings_authorize_url
-from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard, goal_keyboard, supplement_keyboard
+from app.telegram.keyboards import (
+    checkin_keyboard,
+    confirm_delete_keyboard,
+    feel_keyboard,
+    goal_keyboard,
+    supplement_keyboard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +252,7 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     reply_text: str | None = None
     new_keyboard = None
+    show_feel_step = False
     recalc_user_id: int | None = None
 
     with SessionLocal() as session:
@@ -259,10 +266,11 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
         )
 
-        if data in ("ci_done", "ci_feel_skip"):
+        if data == "ci_done":
             tags = list(entry.tags or []) if entry else []
-            reply_text = f"Saved ✓ — {', '.join(tags) if tags else 'nothing notable yesterday'}."
-            recalc_user_id = user.id
+            tag_str = ", ".join(tags) if tags else "nothing notable yesterday"
+            reply_text = f"Saved ✓ — {tag_str}."
+            show_feel_step = True
 
         elif data == "ci_none":
             if entry is None:
@@ -271,6 +279,10 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             entry.tags = []
             session.commit()
             reply_text = "Saved ✓ — nothing notable yesterday."
+            show_feel_step = True
+
+        elif data == "ci_feel_skip":
+            reply_text = "Got it ✓"
             recalc_user_id = user.id
 
         elif data.startswith("ci_feel:"):
@@ -280,7 +292,12 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 session.add(entry)
             entry.feel_score = feel
             session.commit()
-            reply_text = f"Saved ✓ — feel score {feel}/5."
+            reply_text = f"Feel score {feel}/5 saved ✓"
+            recalc_user_id = user.id
+
+        elif data == "ci_feel_note":
+            context.user_data["awaiting_note_date"] = yesterday.isoformat()
+            reply_text = "What happened? Send me a quick note about yesterday."
 
         elif data.startswith("ci_tag:"):
             tag = data.split(":")[1]
@@ -296,7 +313,11 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             session.commit()
             new_keyboard = checkin_keyboard(set(current))
 
-    if reply_text:
+    if show_feel_step:
+        await query.edit_message_text(
+            f"{reply_text}\n\nHow did yesterday feel, 1-5?", reply_markup=feel_keyboard()
+        )
+    elif reply_text:
         await query.edit_message_text(reply_text)
     elif new_keyboard:
         await query.edit_message_reply_markup(reply_markup=new_keyboard)
@@ -811,6 +832,31 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(_MEDICAL_RESPONSE)
         return
     telegram_id = update.effective_user.id
+
+    note_date_str = context.user_data.pop("awaiting_note_date", None)
+    if note_date_str:
+        note_date = date.fromisoformat(note_date_str)
+        with SessionLocal() as session:
+            user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+            if user is None:
+                await update.message.reply_text("Run /start first so I can set you up.")
+                return
+            entry = session.scalar(
+                select(JournalEntry).where(
+                    JournalEntry.user_id == user.id, JournalEntry.date == note_date
+                )
+            )
+            if entry is None:
+                entry = JournalEntry(user_id=user.id, date=note_date, tags=[])
+                session.add(entry)
+            entry.free_text = question
+            session.commit()
+            recalc_user_id = user.id
+        await update.message.reply_text("Noted ✓")
+        log_outgoing(telegram_id, "Noted ✓", "checkin")
+        asyncio.create_task(_run_observation_recalc(recalc_user_id))
+        return
+
     await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
 
     with SessionLocal() as session:

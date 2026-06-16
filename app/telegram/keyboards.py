@@ -41,6 +41,14 @@ def goal_keyboard(current_goal: str | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def feel_keyboard() -> InlineKeyboardMarkup:
+    """Second, optional step of check-in (SPEC §5: feel score 1-5, free-text note)."""
+    rows = [[InlineKeyboardButton(str(n), callback_data=f"ci_feel:{n}") for n in range(1, 6)]]
+    rows.append([InlineKeyboardButton("📝 Add a note", callback_data="ci_feel_note")])
+    rows.append([InlineKeyboardButton("Skip", callback_data="ci_feel_skip")])
+    return InlineKeyboardMarkup(rows)
+
+
 def supplement_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Took it", callback_data="supp_take"),

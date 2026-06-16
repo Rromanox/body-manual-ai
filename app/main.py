@@ -20,6 +20,7 @@ from alembic.config import Config as AlembicConfig
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_message import run_daily_message
 from app.jobs.supplement_reminder import run_supplement_reminder
+from app.jobs.weekly_message import run_weekly_message
 from app.routes import whoop_oauth, withings_oauth, withings_webhook
 from app.telegram.bot import build_application, get_application
 
@@ -89,6 +90,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_supplement_reminder,
         CronTrigger(minute=0),
         id="supplement_reminder",
+        max_instances=6,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    # Sunday-evening weekly summary — same hourly-tick pattern, gated to one day a week.
+    scheduler.add_job(
+        run_weekly_message,
+        CronTrigger(minute=0),
+        id="weekly_summary",
         max_instances=6,
         coalesce=True,
         misfire_grace_time=600,
