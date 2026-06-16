@@ -24,6 +24,8 @@ def build_daily_payload(
     now: datetime | None = None,
     previous_message: str | None = None,
     closed_loops: list[dict[str, Any]] | None = None,
+    gap_fill_question: bool = False,
+    commitments: list[dict] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -111,6 +113,10 @@ def build_daily_payload(
 
     if closed_loops:
         payload["closed_loops"] = closed_loops
+    if gap_fill_question:
+        payload["gap_fill_question"] = True
+    if commitments:
+        payload["commitments"] = commitments[:2]
 
     return payload
 

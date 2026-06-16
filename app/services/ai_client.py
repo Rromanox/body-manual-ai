@@ -56,7 +56,9 @@ A point of view — on a clearly flagged day (a real flag present, not just mild
 
 Special cases:
 - data_maturity "building_baseline": be honest you're still learning their patterns, no baseline comparisons yet.
-- today_recovery_missing: lead with what you have (sleep, yesterday's strain), mention the score is still coming in — don't make the missing data the headline."""
+- today_recovery_missing: lead with what you have (sleep, yesterday's strain), mention the score is still coming in — don't make the missing data the headline.
+- gap_fill_question: recovery is notably low and the user logged nothing about yesterday. End your message with one casual question — "any idea what's behind it?" or "anything going on yesterday — travel, stress, rough night?" One question only, make it feel like something you'd naturally ask a friend, not a form.
+- commitments: things the user said they'd do this week. Reference the most relevant one only if today's data connects to it — one brief mention, like a coach noticing progress, not a reminder. Skip if the data doesn't relate."""
 
 # Few-shot payload→message pairs. Keep these synchronized with the payload
 # builder's actual field names — they teach the model the schema.
@@ -216,6 +218,57 @@ FEW_SHOTS: list[dict[str, str]] = [
             "to tomorrow."
         ),
     },
+    # Gap-fill: recovery flagged low, nothing logged — ask once, casually
+    {
+        "role": "user",
+        "content": json.dumps(
+            {
+                "now": {"local_datetime": "2025-10-22T07:20:00-04:00", "date": "2025-10-22", "day_of_week": "Wednesday", "local_time": "7:20 AM", "part_of_day": "morning", "is_weekend": False},
+                "user_goal": "general_health",
+                "data_days_available": 29,
+                "data_maturity": "early_baseline",
+                "today_recovery_missing": False,
+                "recovery": {"today": 38, "baseline_7d": 62, "baseline_30d": 68, "flag": "low_vs_baseline"},
+                "sleep_hours": {"today": 6.5, "baseline_7d": 7.1, "baseline_30d": 7.2},
+                "resting_hr": {"today": 64, "baseline_7d": 56, "baseline_30d": 55, "flag": "elevated"},
+                "hrv": {"today": 35, "baseline_7d": 55, "baseline_30d": 58, "flag": "below_baseline"},
+                "gap_fill_question": True,
+            }
+        ),
+    },
+    {
+        "role": "assistant",
+        "content": (
+            "Recovery at 38, resting heart rate up, HRV low — everything's pointing to your body "
+            "working harder than usual. Sleep was a bit short too. Anything going on yesterday — "
+            "stress, travel, rough night?"
+        ),
+    },
+    # Commitment: user said they'd protect bedtime — it shows in the data
+    {
+        "role": "user",
+        "content": json.dumps(
+            {
+                "now": {"local_datetime": "2025-10-24T07:10:00-04:00", "date": "2025-10-24", "day_of_week": "Friday", "local_time": "7:10 AM", "part_of_day": "morning", "is_weekend": False},
+                "user_goal": "performance",
+                "data_days_available": 52,
+                "data_maturity": "established",
+                "today_recovery_missing": False,
+                "recovery": {"today": 74, "baseline_7d": 66, "baseline_30d": 69},
+                "sleep_hours": {"today": 7.8, "baseline_7d": 6.9, "baseline_30d": 7.1, "flag": "long_vs_baseline"},
+                "resting_hr": {"today": 54, "baseline_7d": 55, "baseline_30d": 55},
+                "hrv": {"today": 63, "baseline_7d": 57, "baseline_30d": 60},
+                "commitments": [{"text": "I'm going to protect my bedtime this week", "days_ago": 2}],
+            }
+        ),
+    },
+    {
+        "role": "assistant",
+        "content": (
+            "Good morning — recovery at 74 and nearly 8 hours of sleep, both above your recent average. "
+            "That bedtime commitment seems to be paying off."
+        ),
+    },
 ]
 
 WEEKLY_SYSTEM_PROMPT = """\
@@ -225,7 +278,8 @@ You have their 7-day averages vs their 30-day baselines.
 Be honest and direct: what trended well, what trended down, one clear focus for the week ahead.
 3-5 sentences. Warm, specific, not templated. No diagnosis, no population comparisons — only their own normal.
 Zero exclamation marks. Don't open with "Hey there!" or any greeting. Lead with the most important trend.
-Don't close with "Keep it up!" or "Great work!" — end on the focus for the week."""
+Don't close with "Keep it up!" or "Great work!" — end on the focus for the week.
+If `user_reflection` is in the payload, open by connecting what they said to what the data shows — one sentence, then move into the numbers. Don't repeat their reflection back word-for-word."""
 
 QA_SYSTEM_PROMPT = """\
 You're this person's health coach and close friend. You've been tracking their WHOOP and Withings data and know their patterns well. They're texting you a question — answer like you're texting back.
@@ -342,9 +396,9 @@ Respond with ONLY a JSON object — no markdown fences, no commentary — shaped
 {"is_log": true|false, "events": [{"event_type": "...", "time_phrase": "...", "quantity": "...", "confidence": "clean"|"needs_confirmation", "clarifying_question": "..."}]}
 
 Rules:
-- is_log = true only when the message reports something the user did or experienced (a past-tense self-report): "had pizza at 9pm", "drank a few beers", "stressful day at work", "went for a run", "couldn't fall asleep". Set events to a non-empty list.
-- is_log = false for questions, requests, or anything that isn't a self-report: "is 58 recovery bad?", "what should I eat tonight", "thanks", greetings, commands. When false, return "events": [].
-- event_type is exactly one of: meal, alcohol, caffeine, stress, exercise, sleep_problem, note. Use "note" when the message is clearly a log but doesn't cleanly fit any other type — never force-fit a vague log into the wrong type.
+- is_log = true for: (1) past-tense self-reports of something that happened ("had pizza at 9pm", "drank a few beers", "stressful day", "went for a run", "couldn't fall asleep"), OR (2) explicit forward-looking commitments the user wants the coach to remember ("I'm going to bed before 11 this week", "I'll cut back on alcohol", "planning to work out every day"). Set events to a non-empty list.
+- is_log = false for questions, requests, casual conversation, or anything that isn't a self-report or explicit commitment: "is 58 recovery bad?", "what should I eat tonight", "thanks", greetings, commands. When false, return "events": [].
+- event_type is exactly one of: meal, alcohol, caffeine, stress, exercise, sleep_problem, note, commitment. Use "commitment" for explicit intentions/goals the user states. Use "note" when the message is clearly a log but doesn't cleanly fit any other type — never force-fit a vague log into the wrong type.
 - time_phrase: the natural-language time mentioned ("9pm", "this morning", "last night"), or "" if no time was mentioned (means "just now").
 - quantity: a short free-text description of amount or intensity if one was mentioned ("a slice", "3 beers", "an hour"), or null if nothing was mentioned.
 - confidence = "needs_confirmation" whenever a meaningful amount was implied but left genuinely open-ended ("had a few", "drank some", "a big dinner" with no further detail) — and supply exactly one short clarifying_question ("A few what — drinks?"). Otherwise confidence = "clean" and clarifying_question = null.

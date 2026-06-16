@@ -3,6 +3,12 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 CHECKIN_TAGS: list[tuple[str, str]] = [
+    # Positive habits
+    ("🥗 Early dinner", "early_dinner"),
+    ("😴 Early bedtime", "early_bedtime"),
+    ("💧 Well hydrated", "well_hydrated"),
+    ("🧘 Meditated", "meditated"),
+    # Disruptors
     ("🍺 Alcohol", "alcohol"),
     ("🌙 Late meal", "late_meal"),
     ("😰 High stress", "high_stress"),

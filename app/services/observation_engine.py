@@ -19,8 +19,17 @@ from app.models.observation import Observation
 
 logger = logging.getLogger(__name__)
 
+# Tags where a good outcome means the metric is BETTER than baseline (opposite direction)
+POSITIVE_TAGS: frozenset[str] = frozenset({"early_dinner", "early_bedtime", "well_hydrated", "meditated"})
+
 # Which metrics to track for each check-in tag
 TRACKED_PAIRS: dict[str, list[str]] = {
+    # Positive habits — tracked for "What Helps" patterns
+    "early_dinner":   ["recovery", "sleep_hours", "sleep_efficiency"],
+    "early_bedtime":  ["recovery", "sleep_hours"],
+    "well_hydrated":  ["recovery", "hrv_ms"],
+    "meditated":      ["recovery", "hrv_ms", "resting_heart_rate"],
+    # Disruptors — tracked for "What Hurts" patterns
     "alcohol":        ["recovery", "hrv_ms", "sleep_hours"],
     "late_meal":      ["recovery", "sleep_hours", "sleep_efficiency"],
     "high_stress":    ["recovery", "resting_heart_rate", "hrv_ms"],
@@ -33,6 +42,16 @@ TRACKED_PAIRS: dict[str, list[str]] = {
 }
 
 DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("early_dinner", "recovery"):           "Eating earlier may improve next-day recovery",
+    ("early_dinner", "sleep_hours"):        "Eating earlier may extend sleep duration",
+    ("early_dinner", "sleep_efficiency"):   "Eating earlier may improve sleep efficiency",
+    ("early_bedtime", "recovery"):          "Earlier bedtimes may improve next-day recovery",
+    ("early_bedtime", "sleep_hours"):       "Earlier bedtimes may extend sleep duration",
+    ("well_hydrated", "recovery"):          "Good hydration may improve next-day recovery",
+    ("well_hydrated", "hrv_ms"):            "Good hydration may support next-day HRV",
+    ("meditated", "recovery"):              "Meditation may improve next-day recovery",
+    ("meditated", "hrv_ms"):               "Meditation may support next-day HRV",
+    ("meditated", "resting_heart_rate"):   "Meditation may lower resting heart rate",
     ("alcohol", "recovery"):                "Alcohol may lower next-day recovery",
     ("alcohol", "hrv_ms"):                  "Alcohol may suppress next-day HRV",
     ("alcohol", "sleep_hours"):             "Alcohol may disrupt sleep duration",
@@ -73,6 +92,10 @@ MIN_OBSERVATIONS = 3
 
 # Human-friendly labels for narrating a closed loop in the morning message
 TAG_LABELS: dict[str, str] = {
+    "early_dinner": "an early dinner",
+    "early_bedtime": "an early bedtime",
+    "well_hydrated": "good hydration",
+    "meditated": "meditating",
     "alcohol": "drinking",
     "late_meal": "a late meal",
     "high_stress": "high stress",
@@ -147,7 +170,7 @@ def recalculate_observations(session: Session, user_id: int) -> None:
                     }
                 s = stats[pattern_key]
                 s["occurrences"] += 1
-                if _is_supporting(metric_key, next_val, baseline):
+                if _is_supporting(metric_key, next_val, baseline, tag=tag):
                     s["supporting"] += 1
                 s["first_seen"] = min(s["first_seen"], entry.date)
                 s["last_seen"] = max(s["last_seen"], entry.date)
@@ -253,10 +276,18 @@ def build_closed_loops(
             if baseline is None:
                 continue
             baseline = float(baseline)
-            # only surface a loop when the metric actually moved the wrong way
-            if not _is_supporting(metric_key, today_val, baseline):
+            # only surface a loop when the metric moved in the expected direction
+            if not _is_supporting(metric_key, today_val, baseline, tag=tag):
                 continue
             seen.add(key)
+
+            positive = tag in POSITIVE_TAGS
+            if positive:
+                # Better outcome: resting_hr "under" normal = good; everything else "above" = good
+                came_in = "under" if metric_key in _WORSE_IS_HIGHER else "above"
+            else:
+                # Worse outcome: resting_hr "above" normal = bad; everything else "under" = bad
+                came_in = "above" if metric_key in _WORSE_IS_HIGHER else "under"
 
             loop: dict[str, Any] = {
                 "behavior": TAG_LABELS.get(tag, tag.replace("_", " ")),
@@ -264,7 +295,7 @@ def build_closed_loops(
                 "description": DESCRIPTIONS.get((tag, metric_key), f"{tag} may affect {metric_key}"),
                 "today": round(today_val, 1),
                 "your_normal": round(baseline, 1),
-                "came_in": "above" if metric_key in _WORSE_IS_HIGHER else "under",
+                "came_in": came_in,
                 "_deviation": abs(today_val - baseline),
             }
             # If this pairing is already a tracked pattern, hand over the running tally
@@ -285,18 +316,23 @@ def build_closed_loops(
     return loops[:max_loops]
 
 
-def _is_supporting(metric_key: str, value: float, baseline: float) -> bool:
-    """True if the next-day value is notably worse than baseline — suggesting the tag had a negative effect."""
+def _is_supporting(metric_key: str, value: float, baseline: float, tag: str = "") -> bool:
+    """True when the next-day value moved in the expected direction vs baseline.
+
+    For negative tags: metric is notably WORSE than baseline.
+    For positive tags: metric is notably BETTER than baseline.
+    """
+    positive = tag in POSITIVE_TAGS
     if metric_key == "recovery":
-        return value < baseline - 5
+        return value > baseline + 5 if positive else value < baseline - 5
     if metric_key == "hrv_ms":
-        return value < baseline * 0.90
+        return value > baseline * 1.10 if positive else value < baseline * 0.90
     if metric_key == "sleep_hours":
-        return value < baseline - 0.5
+        return value > baseline + 0.5 if positive else value < baseline - 0.5
     if metric_key == "sleep_efficiency":
-        return value < baseline - 5
+        return value > baseline + 5 if positive else value < baseline - 5
     if metric_key == "resting_heart_rate":
-        return value > baseline + 3
+        return value < baseline - 3 if positive else value > baseline + 3
     return False
 
 

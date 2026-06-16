@@ -29,11 +29,12 @@ from app.services.baseline_engine import (
     get_checkin_streak,
     get_previous_daily_message,
     safety_message,
+    should_gap_fill,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.chat_logger import log_outgoing
 from app.services.event_engine import EVENT_TYPES, apply_event_to_tags, enrich_closed_loops_with_meal_gap
-from app.services.observation_engine import build_closed_loops, recalculate_observations
+from app.services.observation_engine import POSITIVE_TAGS, build_closed_loops, recalculate_observations
 from app.services.supplement_engine import get_today_log, mark_taken
 from app.services.timekit import get_user_now, get_user_today, now_block, resolve_local_time
 from app.services.experiment_engine import (
@@ -186,10 +187,14 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         previous_message = get_previous_daily_message(session, user.id, target_date)
         closed_loops = build_closed_loops(session, user.id, target_date, yesterday_tags)
         enrich_closed_loops_with_meal_gap(session, user.id, target_date, closed_loops, today_row)
+        gap_fill = should_gap_fill(session, user.id, target_date, snapshot)
+        from app.services.commitment_engine import get_active_commitments
+        commitments = get_active_commitments(session, user.id, target_date)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
             previous_message=previous_message, closed_loops=closed_loops,
+            gap_fill_question=gap_fill, commitments=commitments or None,
         )
 
         try:
@@ -391,28 +396,34 @@ async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         now = get_user_now(user)
         target_date = now.date()
+
+        # Skip if question or summary already sent today
+        already_sent = session.scalar(
+            select(CoachMessage.id).where(
+                CoachMessage.user_id == user.id,
+                CoachMessage.message_type.in_(["weekly", "weekly_question"]),
+                CoachMessage.date == target_date,
+            )
+        )
+        if already_sent:
+            await update.message.reply_text("Already sent the weekly check-in today — reply to that message to get your summary.")
+            return
+
         snapshot = build_weekly_snapshot(session, user.id, target_date)
         payload = build_weekly_payload(user, snapshot, now=now)
 
-        try:
-            message_text = await generate_weekly_message(payload)
-        except Exception as exc:
-            logger.exception("/weekly AI call failed for user %s", user.id)
-            await send_admin_alert(f"/weekly AI call failed for user {user.id}: {exc}")
-            await update.message.reply_text("I couldn't generate the weekly summary — I've flagged it.")
-            return
-
+        question = "How did this week feel overall — anything that stood out, good or bad?"
         session.add(CoachMessage(
             user_id=user.id,
             date=target_date,
-            message_type="weekly",
+            message_type="weekly_question",
             summary_payload=payload,
-            ai_response=message_text,
+            ai_response=question,
         ))
         session.commit()
 
-    await update.message.reply_text(message_text)
-    log_outgoing(telegram_id, message_text, "ai_weekly")
+    await update.message.reply_text(question)
+    log_outgoing(telegram_id, question, "weekly_question")
 
 
 async def goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -611,27 +622,39 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not has_any_baseline:
         lines.append("_No data yet — run /today after connecting WHOOP._")
 
-    # Patterns block
+    # Patterns block — split into What Helps / What Hurts
     lines.append("")
     if not observations:
         lines.append("*Patterns:* _Still building — check in daily and patterns will appear here after a few weeks._")
     else:
-        stronger = [o for o in observations if o.status == "stronger_signal"]
-        promising = [o for o in observations if o.status == "promising"]
-        watching = [o for o in observations if o.status in ("watching", "weak")]
+        helps = [o for o in observations if o.trigger_tag in POSITIVE_TAGS]
+        hurts = [o for o in observations if o.trigger_tag not in POSITIVE_TAGS]
 
-        if stronger:
-            lines.append("*Stronger Signals:*")
-            for o in stronger:
-                lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} logged days.")
-        if promising:
-            lines.append("\n*Emerging Patterns:*")
-            for o in promising:
-                lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days. Early signal.")
-        if watching:
-            lines.append("\n*Watching:*")
-            for o in watching:
-                lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days so far.")
+        def _obs_lines(obs_list: list) -> None:
+            stronger = [o for o in obs_list if o.status == "stronger_signal"]
+            promising = [o for o in obs_list if o.status == "promising"]
+            watching = [o for o in obs_list if o.status in ("watching", "weak")]
+            if stronger:
+                lines.append("*Stronger Signals:*")
+                for o in stronger:
+                    lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} logged days.")
+            if promising:
+                lines.append("*Emerging:*")
+                for o in promising:
+                    lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days. Early signal.")
+            if watching:
+                lines.append("*Watching:*")
+                for o in watching:
+                    lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days so far.")
+
+        if helps:
+            lines.append("*What Helps:*")
+            _obs_lines(helps)
+        if hurts:
+            if helps:
+                lines.append("")
+            lines.append("*What Hurts:*")
+            _obs_lines(hurts)
 
     # Experiments section
     if exp_summaries:
@@ -873,6 +896,57 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Noted ✓")
         log_outgoing(telegram_id, "Noted ✓", "checkin")
         asyncio.create_task(_run_observation_recalc(recalc_user_id))
+        return
+
+    # Two-turn weekly reflection: if this is a reply to the weekly question, generate summary
+    _weekly_reflection: dict | None = None
+    with SessionLocal() as session:
+        _wrefl_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if _wrefl_user is not None:
+            _wrefl_today = get_user_today(_wrefl_user)
+            _wq = session.scalar(
+                select(CoachMessage).where(
+                    CoachMessage.user_id == _wrefl_user.id,
+                    CoachMessage.message_type == "weekly_question",
+                    CoachMessage.date == _wrefl_today,
+                )
+            )
+            if _wq and not session.scalar(
+                select(CoachMessage.id).where(
+                    CoachMessage.user_id == _wrefl_user.id,
+                    CoachMessage.message_type == "weekly",
+                    CoachMessage.date == _wrefl_today,
+                )
+            ):
+                _weekly_reflection = {
+                    "user": _wrefl_user,
+                    "payload": dict(_wq.summary_payload or {}),
+                    "date": _wrefl_today,
+                }
+
+    if _weekly_reflection is not None:
+        _wr_user = _weekly_reflection["user"]
+        _wr_payload = _weekly_reflection["payload"]
+        _wr_payload["user_reflection"] = question
+        await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
+        try:
+            _wr_msg = await generate_weekly_message(_wr_payload)
+        except Exception as exc:
+            logger.exception("Weekly reflection AI call failed for user %s", _wr_user.id)
+            await send_admin_alert(f"Weekly reflection failed for user {_wr_user.id}: {exc}")
+            await update.message.reply_text("I couldn't generate the weekly summary — flagged it.")
+            return
+        with SessionLocal() as session:
+            session.add(CoachMessage(
+                user_id=_wr_user.id,
+                date=_weekly_reflection["date"],
+                message_type="weekly",
+                summary_payload=_wr_payload,
+                ai_response=_wr_msg,
+            ))
+            session.commit()
+        await update.message.reply_text(_wr_msg)
+        log_outgoing(telegram_id, _wr_msg, "ai_weekly")
         return
 
     with SessionLocal() as session:

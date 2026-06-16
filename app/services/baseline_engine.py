@@ -356,6 +356,38 @@ def get_previous_daily_message(session: Session, user_id: int, before_date: date
     )
 
 
+def should_gap_fill(session: Session, user_id: int, target_date: date, snapshot: DailySnapshot) -> bool:
+    """True when recovery is notably low but nothing was logged about yesterday.
+
+    The backend decides whether to ask; the AI only phrases the question.
+    Gates: recovery is flagged low vs baseline OR outright very low (<50), AND
+    the user has no journal entry and no events for yesterday.
+    """
+    rec = snapshot.recovery
+    low = rec.flag == "low_vs_baseline" or (rec.today is not None and rec.today < 50)
+    if not low:
+        return False
+
+    from app.models.journal_entry import JournalEntry
+    from app.models.event import Event
+
+    yesterday = target_date - timedelta(days=1)
+    has_journal = bool(session.scalar(
+        select(func.count(JournalEntry.id)).where(
+            JournalEntry.user_id == user_id, JournalEntry.date == yesterday
+        )
+    ))
+    if has_journal:
+        return False
+
+    has_events = bool(session.scalar(
+        select(func.count(Event.id)).where(
+            Event.user_id == user_id, Event.local_date == yesterday
+        )
+    ))
+    return not has_events
+
+
 def get_checkin_streak(session: Session, user_id: int, target_date: date) -> int:
     """Count consecutive days with a journal entry, looking back from yesterday."""
     from app.models.journal_entry import JournalEntry

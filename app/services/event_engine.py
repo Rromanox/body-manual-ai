@@ -28,7 +28,7 @@ from app.services.metrics_normalizer import _sleep_duration_milli, parse_whoop_t
 
 logger = logging.getLogger(__name__)
 
-EVENT_TYPES = {"meal", "alcohol", "caffeine", "stress", "exercise", "sleep_problem", "note"}
+EVENT_TYPES = {"meal", "alcohol", "caffeine", "stress", "exercise", "sleep_problem", "note", "commitment"}
 
 # Coarse, immediate tag mapping — applied the moment an event is logged, before
 # any sleep data exists to judge it against. "Late" thresholds match what a

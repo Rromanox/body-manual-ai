@@ -60,10 +60,11 @@ async def _send_for_user(user_id: int) -> None:
         now = get_user_now(user)
         target_date = now.date()
 
+        # Idempotency: skip if question or full summary already sent today
         already_sent = session.scalar(
             select(CoachMessage.id).where(
                 CoachMessage.user_id == user_id,
-                CoachMessage.message_type == "weekly",
+                CoachMessage.message_type.in_(["weekly", "weekly_question"]),
                 CoachMessage.date == target_date,
             )
         )
@@ -73,23 +74,20 @@ async def _send_for_user(user_id: int) -> None:
         snapshot = build_weekly_snapshot(session, user.id, target_date)
         payload = build_weekly_payload(user, snapshot, now=now)
 
-        try:
-            message_text = await generate_weekly_message(payload)
-        except Exception as exc:
-            logger.exception("Weekly AI call failed for user %s", user_id)
-            await send_admin_alert(f"Weekly AI call failed for user {user_id}: {exc}")
-            return
-
+        # Two-turn flow: send the question first, store the pre-built payload.
+        # When the user replies, plain_text() detects the pending weekly_question
+        # and generates the full summary incorporating their reflection.
+        question = "How did this week feel overall — anything that stood out, good or bad?"
         session.add(CoachMessage(
             user_id=user.id,
             date=target_date,
-            message_type="weekly",
+            message_type="weekly_question",
             summary_payload=payload,
-            ai_response=message_text,
+            ai_response=question,
         ))
         session.commit()
         telegram_id = user.telegram_id
 
     bot = get_application().bot
-    await bot.send_message(chat_id=telegram_id, text=message_text)
-    log_outgoing(telegram_id, message_text, "ai_weekly", user_id=user_id)
+    await bot.send_message(chat_id=telegram_id, text=question)
+    log_outgoing(telegram_id, question, "weekly_question", user_id=user_id)

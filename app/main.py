@@ -19,6 +19,7 @@ from alembic.config import Config as AlembicConfig
 
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_message import run_daily_message
+from app.jobs.proactive_check import run_proactive_check
 from app.jobs.supplement_reminder import run_supplement_reminder
 from app.jobs.weekly_message import run_weekly_message
 from app.routes import whoop_oauth, withings_oauth, withings_webhook
@@ -100,6 +101,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         CronTrigger(minute=0),
         id="weekly_summary",
         max_instances=6,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    # Gated proactive ping: fires when recovery is low 3+ days in a row, after
+    # the morning message has gone out, during reasonable hours only.
+    scheduler.add_job(
+        run_proactive_check,
+        CronTrigger(minute=0),
+        id="proactive_check",
+        max_instances=3,
         coalesce=True,
         misfire_grace_time=600,
     )
