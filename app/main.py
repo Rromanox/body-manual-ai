@@ -19,6 +19,7 @@ from alembic.config import Config as AlembicConfig
 
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_message import run_daily_message
+from app.jobs.supplement_reminder import run_supplement_reminder
 from app.routes import whoop_oauth, withings_oauth, withings_webhook
 from app.telegram.bot import build_application, get_application
 
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Daily use
         BotCommand("today", "Get your coach message for today"),
         BotCommand("checkin", "Log what happened yesterday"),
+        BotCommand("creatine", "Log creatine taken today"),
         BotCommand("focus", "One action item for this week"),
         BotCommand("weekly", "This week's summary"),
         # Review & track
@@ -77,6 +79,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_daily_message,
         CronTrigger(minute=0),
         id="daily_morning_message",
+        max_instances=6,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    # Noon + 9pm creatine nudge, same hourly-tick/per-user-timezone pattern as
+    # the morning message. max_instances > 1 for the same cross-timezone reason.
+    scheduler.add_job(
+        run_supplement_reminder,
+        CronTrigger(minute=0),
+        id="supplement_reminder",
         max_instances=6,
         coalesce=True,
         misfire_grace_time=600,

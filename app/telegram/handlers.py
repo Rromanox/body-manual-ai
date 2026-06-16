@@ -32,6 +32,7 @@ from app.services.baseline_engine import (
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.chat_logger import log_outgoing
 from app.services.observation_engine import build_closed_loops, recalculate_observations
+from app.services.supplement_engine import get_today_log, mark_taken
 from app.services.timekit import get_user_now, get_user_today, now_block
 from app.services.experiment_engine import (
     end_experiment,
@@ -43,7 +44,7 @@ from app.services.experiment_engine import (
 )
 from app.services.whoop_client import WhoopAuthError, build_authorize_url, make_oauth_state
 from app.services.withings_client import build_authorize_url as withings_authorize_url
-from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard, goal_keyboard
+from app.telegram.keyboards import checkin_keyboard, confirm_delete_keyboard, goal_keyboard, supplement_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +303,51 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if recalc_user_id:
         asyncio.create_task(_run_observation_recalc(recalc_user_id))
+
+
+async def creatine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log creatine taken right now, without waiting for a reminder."""
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        target_date = get_user_today(user)
+        existing = get_today_log(session, user.id, target_date)
+        if existing and existing.taken:
+            await update.message.reply_text("Already logged for today ✓")
+            return
+        mark_taken(session, user.id, target_date)
+    await update.message.reply_text("Logged ✓ — creatine taken today.")
+
+
+async def supplement_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    telegram_id = query.from_user.id
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            return
+        target_date = get_user_today(user)
+
+        if data == "supp_take":
+            mark_taken(session, user.id, target_date)
+            reply_text = "Logged ✓ — creatine taken today."
+        elif data == "supp_skip":
+            reply_text = "Got it — I'll check again later."
+        else:
+            return
+
+    await query.edit_message_text(reply_text)
 
 
 async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

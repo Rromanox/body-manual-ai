@@ -41,6 +41,13 @@ def goal_keyboard(current_goal: str | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def supplement_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Took it", callback_data="supp_take"),
+        InlineKeyboardButton("Not yet", callback_data="supp_skip"),
+    ]])
+
+
 def confirm_delete_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("Yes, delete everything", callback_data="del_confirm"),

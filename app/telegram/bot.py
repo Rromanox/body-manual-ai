@@ -54,6 +54,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("connect_withings", handlers.connect_withings))
     application.add_handler(CommandHandler("today", handlers.today))
     application.add_handler(CommandHandler("checkin", handlers.checkin))
+    application.add_handler(CommandHandler("creatine", handlers.creatine))
     application.add_handler(CommandHandler("weekly", handlers.weekly))
     application.add_handler(CommandHandler("manual", handlers.manual))
     application.add_handler(CommandHandler("goal", handlers.goal))
@@ -66,6 +67,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("delete", handlers.delete))
 
     application.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci_"))
+    application.add_handler(CallbackQueryHandler(handlers.supplement_callback, pattern=r"^supp_"))
     application.add_handler(CallbackQueryHandler(handlers.delete_callback, pattern=r"^del_"))
     application.add_handler(CallbackQueryHandler(handlers.goal_callback, pattern=r"^goal:"))
 
