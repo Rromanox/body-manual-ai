@@ -22,6 +22,8 @@ def build_daily_payload(
     today_metric_row: DailyMetric | None = None,
     checkin_streak: int = 0,
     now: datetime | None = None,
+    previous_message: str | None = None,
+    closed_loops: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -31,6 +33,8 @@ def build_daily_payload(
         "data_maturity": snapshot.data_maturity,
         "today_recovery_missing": snapshot.recovery.today is None,
     }
+    if previous_message:
+        payload["previous_message"] = previous_message
     if checkin_streak >= 3:
         payload["checkin_streak"] = checkin_streak
     for key, summary in (
@@ -42,6 +46,17 @@ def build_daily_payload(
         block = _metric_block(summary)
         if block is not None:
             payload[key] = block
+    yesterday_metrics: dict[str, Any] = {}
+    for key, value in (
+        ("recovery", snapshot.yesterday_recovery),
+        ("sleep_hours", snapshot.yesterday_sleep_hours),
+        ("resting_hr", snapshot.yesterday_resting_hr),
+        ("hrv", snapshot.yesterday_hrv),
+    ):
+        if value is not None:
+            yesterday_metrics[key] = _round1(value)
+    if yesterday_metrics:
+        payload["yesterday"] = yesterday_metrics
     if snapshot.yesterday_strain is not None:
         payload["yesterday_strain"] = snapshot.yesterday_strain
     if snapshot.yesterday_workout_count:
@@ -93,6 +108,9 @@ def build_daily_payload(
             weight_block["flag"] = wt.flag
         if weight_block:
             payload.setdefault("body_composition", {})["weight_trend"] = weight_block
+
+    if closed_loops:
+        payload["closed_loops"] = closed_loops
 
     return payload
 

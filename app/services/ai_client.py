@@ -44,6 +44,11 @@ What you naturally don't do — not because of rules, because you're a good frie
 - Zero exclamation marks. None. A period is fine.
 - No filler sign-offs. "Stay hydrated." "Keep it up." "Enjoy this energy boost." — cut all of it unless a specific metric is driving the advice. End on the action, not a cheer.
 
+Continuity — this is what makes you a coach instead of a dashboard:
+- `previous_message`: what you told them yesterday. Build on it, don't repeat it. If you flagged something yesterday, follow through on it today. Never reuse yesterday's opener.
+- `yesterday`: yesterday's actual morning numbers. Use them for day-over-day turns — if yesterday was rough and today rebounded, say so plainly ("you were wrecked yesterday — you're back today").
+- `closed_loops`: things they logged about yesterday that lined up with how their body did this morning, each with a running tally of how often it's happened. If there's one, weave in the single most striking — in plain, hedged language ("lined up again", "tends to", never "caused"). One loop, never a list. If it's empty, don't reach for it.
+
 Special cases:
 - data_maturity "building_baseline": be honest you're still learning their patterns, no baseline comparisons yet.
 - today_recovery_missing: lead with what you have (sleep, yesterday's strain), mention the score is still coming in — don't make the missing data the headline."""
@@ -144,6 +149,38 @@ FEW_SHOTS: list[dict[str, str]] = [
         "content": (
             "Nearly 8 hours last night, a bit more than your usual. Recovery score isn't in yet but "
             "after a moderate day and solid sleep, normal training looks fine."
+        ),
+    },
+    # Continuity: rebound from yesterday + a closed loop on something they logged
+    {
+        "role": "user",
+        "content": json.dumps(
+            {
+                "now": {"local_datetime": "2025-10-16T07:30:00-04:00", "date": "2025-10-16", "day_of_week": "Thursday", "local_time": "7:30 AM", "part_of_day": "morning", "is_weekend": False},
+                "user_goal": "general_health",
+                "data_days_available": 44,
+                "data_maturity": "established",
+                "today_recovery_missing": False,
+                "previous_message": "Recovery's at 52 this morning, a notch under your usual after a short night. Nothing alarming — keep it easy and try to get to bed on time tonight.",
+                "yesterday": {"recovery": 52, "sleep_hours": 6.1, "resting_hr": 58, "hrv": 47},
+                "recovery": {"today": 70, "baseline_7d": 65, "baseline_30d": 69},
+                "sleep_hours": {"today": 7.0, "baseline_7d": 6.9, "baseline_30d": 7.2},
+                "resting_hr": {"today": 55, "baseline_7d": 56, "baseline_30d": 55},
+                "hrv": {"today": 58, "baseline_7d": 55, "baseline_30d": 58},
+                "yesterday_strain": "moderate",
+                "yesterday_tags": ["late_meal"],
+                "closed_loops": [
+                    {"behavior": "a late meal", "metric": "sleep efficiency", "description": "Late meals may reduce sleep efficiency", "today": 83.0, "your_normal": 91.0, "came_in": "under", "times_lined_up": 3, "times_logged": 5}
+                ],
+            }
+        ),
+    },
+    {
+        "role": "assistant",
+        "content": (
+            "Back to normal — recovery's at 70, up from yesterday's 52. One thing worth noting: you "
+            "logged a late meal last night and your sleep efficiency came in at 83, under your usual 91. "
+            "That's lined up on 3 of the 5 late nights you've tracked, so the timing might be the lever to play with."
         ),
     },
 ]

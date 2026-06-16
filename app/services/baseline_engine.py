@@ -73,6 +73,12 @@ class DailySnapshot:
     data_maturity: str
     safety_triggers: list[str]
     weight_trend: WeightTrend | None = None
+    # Yesterday's actual morning numbers, for day-over-day continuity ("you were
+    # wrecked yesterday, you're back today"). None when there's no row for yesterday.
+    yesterday_recovery: float | None = None
+    yesterday_sleep_hours: float | None = None
+    yesterday_resting_hr: float | None = None
+    yesterday_hrv: float | None = None
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -107,6 +113,10 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         data_maturity=_maturity(data_days),
         safety_triggers=_safety_triggers(session, user_id, target_date, resting_hr.baseline_30d, weight_trend),
         weight_trend=weight_trend,
+        yesterday_recovery=yesterday_row.recovery_score if yesterday_row else None,
+        yesterday_sleep_hours=yesterday_row.sleep_hours if yesterday_row else None,
+        yesterday_resting_hr=yesterday_row.resting_heart_rate if yesterday_row else None,
+        yesterday_hrv=yesterday_row.hrv_ms if yesterday_row else None,
     )
 
 
@@ -322,6 +332,28 @@ def _consecutive_days(by_date: dict, target_date: date, predicate) -> int:
             return streak
         streak += 1
         day -= timedelta(days=1)
+
+
+def get_previous_daily_message(session: Session, user_id: int, before_date: date) -> str | None:
+    """The text of the last daily coach message strictly before `before_date`.
+
+    Lets the morning message build on what it said yesterday instead of cold-opening.
+    Excludes today's own row, so a second /today in the same morning still references
+    yesterday, not the message we just generated.
+    """
+    from app.models.coach_message import CoachMessage
+
+    return session.scalar(
+        select(CoachMessage.ai_response)
+        .where(
+            CoachMessage.user_id == user_id,
+            CoachMessage.message_type == "daily",
+            CoachMessage.date < before_date,
+            CoachMessage.ai_response != "",
+        )
+        .order_by(CoachMessage.date.desc(), CoachMessage.id.desc())
+        .limit(1)
+    )
 
 
 def get_checkin_streak(session: Session, user_id: int, target_date: date) -> int:

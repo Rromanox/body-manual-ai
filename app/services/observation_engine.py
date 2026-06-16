@@ -10,7 +10,7 @@ import logging
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.daily_metric import DailyMetric
@@ -70,6 +70,33 @@ METRIC_COL: dict[str, str] = {
 
 # Don't surface a pattern until it has this many data points
 MIN_OBSERVATIONS = 3
+
+# Human-friendly labels for narrating a closed loop in the morning message
+TAG_LABELS: dict[str, str] = {
+    "alcohol": "drinking",
+    "late_meal": "a late meal",
+    "high_stress": "high stress",
+    "sick": "being sick",
+    "travel": "travel",
+    "hard_day": "a hard day",
+    "late_caffeine": "late caffeine",
+    "dehydrated": "being dehydrated",
+    "big_meal": "a big meal",
+}
+METRIC_LABELS: dict[str, str] = {
+    "recovery": "recovery",
+    "hrv_ms": "HRV",
+    "sleep_hours": "sleep",
+    "sleep_efficiency": "sleep efficiency",
+    "resting_heart_rate": "resting heart rate",
+}
+# Metrics where a negative effect shows up as a HIGHER number (others: lower = worse)
+_WORSE_IS_HIGHER = {"resting_heart_rate"}
+
+# Loops need enough history for "your normal" to mean anything (matches flag gate)
+MIN_DAYS_FOR_LOOPS = 7
+# How many loops to surface at once — one per morning reads as a coach, a list reads as a nag
+MAX_LOOPS = 2
 
 
 def recalculate_observations(session: Session, user_id: int) -> None:
@@ -157,6 +184,105 @@ def recalculate_observations(session: Session, user_id: int) -> None:
 
     session.commit()
     logger.info("Observation recalc complete for user %s: %s patterns evaluated", user_id, len(stats))
+
+
+def build_closed_loops(
+    session: Session,
+    user_id: int,
+    target_date: date,
+    yesterday_tags: list[str] | None,
+    max_loops: int = MAX_LOOPS,
+) -> list[dict[str, Any]]:
+    """Close the loop on what the user logged about yesterday.
+
+    For each behavior the user tagged yesterday, check whether the matching metric
+    THIS morning came in worse than their own 30-day normal — and how often that has
+    lined up before. Backend computes the connection; the AI only narrates it.
+
+    Uses the same tag→metric pairs and the same supporting-deviation test as the
+    Personal Operating Manual, so an in-the-moment loop and a long-term pattern are
+    the same evidence at two zoom levels. Returns at most `max_loops`, biggest
+    deviation first. Empty when there's nothing worth saying.
+    """
+    if not yesterday_tags:
+        return []
+
+    # Same maturity gate as flags — without a real baseline "under your normal" is noise
+    day_count = session.scalar(
+        select(func.count(DailyMetric.id)).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date <= target_date,
+            (DailyMetric.recovery_score.is_not(None)) | (DailyMetric.sleep_hours.is_not(None)),
+        )
+    )
+    if (day_count or 0) < MIN_DAYS_FOR_LOOPS:
+        return []
+
+    today_row = session.scalar(
+        select(DailyMetric).where(
+            DailyMetric.user_id == user_id, DailyMetric.date == target_date
+        )
+    )
+    if today_row is None:
+        return []
+
+    yesterday = target_date - timedelta(days=1)
+    month_start = target_date - timedelta(days=30)
+
+    loops: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for tag in yesterday_tags:
+        for metric_key in TRACKED_PAIRS.get(tag, []):
+            key = (tag, metric_key)
+            if key in seen:
+                continue
+            col_name = METRIC_COL[metric_key]
+            col = getattr(DailyMetric, col_name)
+            today_val = getattr(today_row, col_name, None)
+            if today_val is None:
+                continue
+            # baseline excludes today so "your normal" doesn't include the day we're judging
+            baseline = session.scalar(
+                select(func.avg(col)).where(
+                    DailyMetric.user_id == user_id,
+                    DailyMetric.date >= month_start,
+                    DailyMetric.date <= yesterday,
+                    col.is_not(None),
+                )
+            )
+            if baseline is None:
+                continue
+            baseline = float(baseline)
+            # only surface a loop when the metric actually moved the wrong way
+            if not _is_supporting(metric_key, today_val, baseline):
+                continue
+            seen.add(key)
+
+            loop: dict[str, Any] = {
+                "behavior": TAG_LABELS.get(tag, tag.replace("_", " ")),
+                "metric": METRIC_LABELS.get(metric_key, metric_key),
+                "description": DESCRIPTIONS.get((tag, metric_key), f"{tag} may affect {metric_key}"),
+                "today": round(today_val, 1),
+                "your_normal": round(baseline, 1),
+                "came_in": "above" if metric_key in _WORSE_IS_HIGHER else "under",
+                "_deviation": abs(today_val - baseline),
+            }
+            # If this pairing is already a tracked pattern, hand over the running tally
+            obs = session.scalar(
+                select(Observation).where(
+                    Observation.user_id == user_id,
+                    Observation.pattern_key == f"{tag}_{metric_key}",
+                )
+            )
+            if obs is not None and obs.occurrence_count:
+                loop["times_lined_up"] = obs.supporting_count
+                loop["times_logged"] = obs.occurrence_count
+            loops.append(loop)
+
+    loops.sort(key=lambda l: l["_deviation"], reverse=True)
+    for l in loops:
+        l.pop("_deviation", None)
+    return loops[:max_loops]
 
 
 def _is_supporting(metric_key: str, value: float, baseline: float) -> bool:

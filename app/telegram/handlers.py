@@ -26,11 +26,12 @@ from app.services.baseline_engine import (
     build_qa_context,
     build_weekly_snapshot,
     get_checkin_streak,
+    get_previous_daily_message,
     safety_message,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services.chat_logger import log_outgoing
-from app.services.observation_engine import recalculate_observations
+from app.services.observation_engine import build_closed_loops, recalculate_observations
 from app.services.timekit import get_user_now, get_user_today, now_block
 from app.services.experiment_engine import (
     end_experiment,
@@ -173,9 +174,12 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         )
         streak = get_checkin_streak(session, user.id, target_date)
+        previous_message = get_previous_daily_message(session, user.id, target_date)
+        closed_loops = build_closed_loops(session, user.id, target_date, yesterday_tags)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
+            previous_message=previous_message, closed_loops=closed_loops,
         )
 
         try:
