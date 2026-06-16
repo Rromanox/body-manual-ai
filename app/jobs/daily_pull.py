@@ -74,6 +74,8 @@ def _apply_draft(metric: DailyMetric, draft: DailyRow) -> None:
 
 async def run_daily_pull() -> None:
     """Scheduled morning job: refresh every active user's recent WHOOP data."""
+    from app.services.observation_engine import recalculate_observations
+
     with SessionLocal() as session:
         users = session.scalars(
             select(User)
@@ -84,6 +86,10 @@ async def run_daily_pull() -> None:
             try:
                 written = await pull_and_store(session, user, days=7)
                 logger.info("Daily pull for user %s wrote %s dates", user.id, written)
+                try:
+                    recalculate_observations(session, user.id)
+                except Exception:
+                    logger.exception("Observation recalc failed after daily pull for user %s", user.id)
             except Exception as exc:
                 logger.exception("Daily pull failed for user %s", user.id)
                 await send_admin_alert(f"Daily pull failed for user {user.id}: {exc}")

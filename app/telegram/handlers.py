@@ -264,6 +264,7 @@ async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             entry.tags = []
             session.commit()
             reply_text = "Saved ✓ — nothing notable yesterday."
+            recalc_user_id = user.id
 
         elif data.startswith("ci_feel:"):
             feel = int(data.split(":")[1])
@@ -432,11 +433,20 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     telegram_id = update.effective_user.id
 
+    from app.models.daily_metric import DailyMetric as _DM
+    from sqlalchemy import func as _func
+
     with SessionLocal() as session:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))
         if user is None:
             await update.message.reply_text("Run /start first so I can set you up.")
             return
+
+        # Recalculate observations so the manual always shows fresh counts
+        try:
+            recalculate_observations(session, user.id)
+        except Exception:
+            logger.exception("Observation recalc failed on /manual for user %s", user.id)
 
         observations = session.scalars(
             select(Observation)
@@ -445,47 +455,48 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ).all()
         name = user.first_name or "Your"
 
-    lines = [f"*{name}'s Body Manual*\n"]
-
-    if not observations:
-        lines.append("_Still building patterns — need a few more weeks of check-ins._\n")
-        lines.append("*Your Baselines (last 30 days):*")
-        from datetime import datetime as _dt
-        from app.models.daily_metric import DailyMetric as _DM
-        from sqlalchemy import func as _func
+        # Baselines — always shown
         target_date = _today_local(user)
         month_start = target_date - timedelta(days=30)
-        with SessionLocal() as bsession:
-            def _avg30(col):
-                return bsession.scalar(
-                    select(_func.avg(col)).where(
-                        _DM.user_id == user.id,
-                        _DM.date >= month_start,
-                        _DM.date < target_date,
-                        col.is_not(None),
-                    )
-                )
-            avg_recovery = _avg30(_DM.recovery_score)
-            avg_hrv = _avg30(_DM.hrv_ms)
-            avg_sleep = _avg30(_DM.sleep_hours)
-            avg_rhr = _avg30(_DM.resting_heart_rate)
-            avg_weight = _avg30(_DM.weight)
-            avg_bf = _avg30(_DM.body_fat_pct)
 
-        if avg_recovery:
-            lines.append(f"• Recovery: {avg_recovery:.0f} avg")
-        if avg_hrv:
-            lines.append(f"• HRV: {avg_hrv:.0f}ms avg")
-        if avg_sleep:
-            lines.append(f"• Sleep: {avg_sleep:.1f}h avg")
-        if avg_rhr:
-            lines.append(f"• Resting HR: {avg_rhr:.0f} bpm avg")
-        if avg_weight:
-            lines.append(f"• Weight: {avg_weight * 2.20462:.1f} lbs avg")
-        if avg_bf:
-            lines.append(f"• Body fat: {avg_bf:.1f}% avg")
-        if not any([avg_recovery, avg_hrv, avg_sleep, avg_rhr]):
-            lines.append("_No data yet — run /today after connecting WHOOP._")
+        def _avg30(col):
+            return session.scalar(
+                select(_func.avg(col)).where(
+                    _DM.user_id == user.id,
+                    _DM.date >= month_start,
+                    _DM.date < target_date,
+                    col.is_not(None),
+                )
+            )
+
+        avg_recovery = _avg30(_DM.recovery_score)
+        avg_hrv = _avg30(_DM.hrv_ms)
+        avg_sleep = _avg30(_DM.sleep_hours)
+        avg_rhr = _avg30(_DM.resting_heart_rate)
+        avg_weight = _avg30(_DM.weight)
+        avg_bf = _avg30(_DM.body_fat_pct)
+
+        exp_summaries = get_experiment_summaries(session, user.id, target_date)
+
+    lines = [f"*{name}'s Body Manual*\n"]
+
+    # Baselines block — always at the top
+    lines.append("*Your 30-day baselines:*")
+    has_any_baseline = False
+    if avg_recovery:
+        lines.append(f"Recovery {avg_recovery:.0f}  ·  HRV {avg_hrv:.0f}ms  ·  Sleep {avg_sleep:.1f}h  ·  RHR {avg_rhr:.0f}bpm")
+        has_any_baseline = True
+    if avg_weight:
+        bf_str = f"  ·  Body fat {avg_bf:.1f}%" if avg_bf else ""
+        lines.append(f"Weight {avg_weight * 2.20462:.1f} lbs{bf_str}")
+        has_any_baseline = True
+    if not has_any_baseline:
+        lines.append("_No data yet — run /today after connecting WHOOP._")
+
+    # Patterns block
+    lines.append("")
+    if not observations:
+        lines.append("*Patterns:* _Still building — check in daily and patterns will appear here after a few weeks._")
     else:
         stronger = [o for o in observations if o.status == "stronger_signal"]
         promising = [o for o in observations if o.status == "promising"]
@@ -494,26 +505,17 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if stronger:
             lines.append("*Stronger Signals:*")
             for o in stronger:
-                lines.append(
-                    f"• {o.pattern_description}\n  Evidence: {o.supporting_count} of {o.occurrence_count} logged days."
-                )
+                lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} logged days.")
         if promising:
             lines.append("\n*Emerging Patterns:*")
             for o in promising:
-                lines.append(
-                    f"• {o.pattern_description}\n  Evidence: {o.supporting_count} of {o.occurrence_count} logged days. Early signal."
-                )
+                lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days. Early signal.")
         if watching:
             lines.append("\n*Watching:*")
             for o in watching:
-                lines.append(
-                    f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days so far."
-                )
+                lines.append(f"• {o.pattern_description}\n  {o.supporting_count} of {o.occurrence_count} days so far.")
 
     # Experiments section
-    target_date_for_exp = _today_local(user)
-    with SessionLocal() as esession:
-        exp_summaries = get_experiment_summaries(esession, user.id, target_date_for_exp)
     if exp_summaries:
         lines.append("\n*Experiments*")
         for s in exp_summaries:
@@ -793,9 +795,9 @@ async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Optional arg: number of messages to show (default 30, max 100)
     try:
-        limit = min(int((context.args or ["30"])[0]), 100)
+        limit = min(int((context.args or ["50"])[0]), 200)
     except (ValueError, IndexError):
-        limit = 30
+        limit = 50
 
     from app.models.message_log import MessageLog as _ML
     try:
@@ -836,10 +838,7 @@ async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ts = row.created_at.strftime("%b %d %H:%M") if row.created_at else "?"
         icon = "👤" if row.direction == "in" else "🤖"
         type_tag = TYPE_EMOJI.get(row.message_type, "")
-        content = row.content
-        if row.direction == "out" and len(content) > 200:
-            content = content[:200] + "…"
-        lines.append(f"[{ts}] {icon}{type_tag} {content}")
+        lines.append(f"[{ts}] {icon}{type_tag} {row.content}")
 
     # No parse_mode — message content can contain Markdown special chars that break the parser
     async def _send(text: str) -> None:
