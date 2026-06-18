@@ -88,7 +88,9 @@ class DailySnapshot:
     wake_consistency: dict | None = None   # avg wake time + std deviation over last 21 days
     hrv_trend: dict | None = None          # 30d HRV avg now vs 60-90d ago (fitness progress)
     readiness_streak: int = 0             # consecutive days recovery >= 67 (WHOOP green)
-    workout_effect: dict | None = None   # recovery after workout vs rest days (90d lookback)
+    workout_effect: dict | None = None   # recovery after workout vs rest days
+    weight_velocity: dict | None = None  # weight change rate now vs prior 4 weeks (90d lookback)
+    weight_velocity: dict | None = None  # body comp velocity: rate now vs 4 weeks ago
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -137,7 +139,76 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         hrv_trend=get_hrv_baseline_trend(session, user_id, target_date),
         readiness_streak=_get_readiness_streak(session, user_id, target_date),
         workout_effect=get_workout_recovery_effect(session, user_id, target_date),
+        weight_velocity=get_weight_velocity(session, user_id, target_date),
     )
+
+
+def get_weight_velocity(
+    session: Session,
+    user_id: int,
+    target_date: date,
+) -> dict | None:
+    """Compare weight change rate this 4 weeks vs the previous 4 weeks.
+
+    Detects whether progress is accelerating, steady, decelerating, or stalled.
+    Only returns a result when both windows have at least 5 weight readings.
+    """
+    KG_TO_LBS = 2.20462
+
+    def _period_avg(start: date, end: date) -> tuple[float | None, int]:
+        rows = session.scalars(
+            select(DailyMetric).where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.date >= start,
+                DailyMetric.date <= end,
+                DailyMetric.weight.is_not(None),
+            )
+        ).all()
+        if len(rows) < 5:
+            return None, 0
+        return sum(r.weight for r in rows) / len(rows), len(rows)
+
+    current_avg, current_n = _period_avg(target_date - timedelta(days=28), target_date)
+    prev_avg, prev_n = _period_avg(target_date - timedelta(days=56), target_date - timedelta(days=29))
+
+    if current_avg is None or prev_avg is None:
+        return None
+
+    # Weekly rate for each period (lbs/week)
+    current_weekly = round((current_avg - prev_avg) / 4 * KG_TO_LBS, 2)
+    prev_weekly_start_avg, prev_n2 = _period_avg(
+        target_date - timedelta(days=84), target_date - timedelta(days=57)
+    )
+    if prev_n2 < 5 or prev_weekly_start_avg is None:
+        # Can't compute prior period rate — just return the current rate
+        return {
+            "current_weekly_rate_lbs": current_weekly,
+            "weeks_analyzed": 4,
+        } if abs(current_weekly) > 0.1 else None
+
+    prev_weekly = round((prev_avg - prev_weekly_start_avg) / 4 * KG_TO_LBS, 2)
+    velocity_change = round(current_weekly - prev_weekly, 2)
+
+    # Classify: for weight_loss users negative current_weekly is progress;
+    # a less-negative current vs prev means decelerating.
+    abs_change = abs(velocity_change)
+    if abs_change < 0.1:
+        status = "steady"
+    elif abs(current_weekly) < 0.15:
+        status = "stalled"
+    elif (current_weekly < 0 and prev_weekly < 0 and current_weekly < prev_weekly):
+        status = "accelerating"
+    elif (current_weekly > 0 and prev_weekly > 0 and current_weekly > prev_weekly):
+        status = "accelerating"
+    else:
+        status = "decelerating"
+
+    return {
+        "current_4w_weekly_rate_lbs": current_weekly,
+        "previous_4w_weekly_rate_lbs": prev_weekly,
+        "velocity_change_lbs": velocity_change,
+        "status": status,
+    }
 
 
 def get_workout_recovery_effect(
@@ -934,6 +1005,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         goal_weight_lbs=getattr(user, "goal_weight_lbs", None) if user else None,
         hrv_long_trend=get_hrv_baseline_trend(session, user_id, target_date),
         workout_effect=get_workout_recovery_effect(session, user_id, target_date),
+        weight_velocity=get_weight_velocity(session, user_id, target_date),
     )
 
 
