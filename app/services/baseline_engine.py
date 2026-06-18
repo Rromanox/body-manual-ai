@@ -474,9 +474,12 @@ class QAContext:
     user_name: str | None = None
     max_heart_rate: float | None = None
     height_meter: float | None = None
+    user_goal: str | None = None
+    recent_events: list[dict] | None = None  # last 14 days of logged events
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
+    from app.models.event import Event
     from app.models.journal_entry import JournalEntry
     from app.models.observation import Observation
 
@@ -564,6 +567,25 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         for o in obs_rows
     ]
 
+    events_cutoff = target_date - timedelta(days=14)
+    event_rows = session.scalars(
+        select(Event)
+        .where(
+            Event.user_id == user_id,
+            Event.local_date >= events_cutoff,
+            Event.local_date <= target_date,
+        )
+        .order_by(Event.local_date.desc(), Event.occurred_at.desc())
+    ).all()
+    recent_events = [
+        {
+            "date": str(r.local_date),
+            "type": r.event_type,
+            "text": r.raw_text,
+        }
+        for r in event_rows
+    ]
+
     data_days = _data_days_available(session, user_id, target_date)
     return QAContext(
         data_days_available=data_days,
@@ -577,4 +599,47 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         user_name=getattr(user, "first_name", None) if user else None,
         max_heart_rate=getattr(user, "max_heart_rate", None) if user else None,
         height_meter=getattr(user, "height_meter", None) if user else None,
+        user_goal=getattr(user, "goal", None) if user else None,
+        recent_events=recent_events or None,
     )
+
+
+_SAFETY_WARNING_COOLDOWN_DAYS = 3
+
+
+def filter_fresh_triggers(
+    session: Session,
+    user_id: int,
+    target_date: date,
+    triggers: list[str],
+) -> list[str]:
+    """Return only triggers not already shown in recent daily messages.
+
+    Prevents the same safety warning from firing every single day once
+    a threshold is crossed. The user sees it once, then silence for
+    COOLDOWN days before it can resurface.
+    """
+    if not triggers:
+        return []
+    from app.models.coach_message import CoachMessage
+
+    cutoff = target_date - timedelta(days=_SAFETY_WARNING_COOLDOWN_DAYS)
+    recent = session.scalars(
+        select(CoachMessage).where(
+            CoachMessage.user_id == user_id,
+            CoachMessage.message_type == "daily",
+            CoachMessage.date >= cutoff,
+            CoachMessage.date < target_date,
+        )
+    ).all()
+
+    already_shown: set[str] = set()
+    for msg in recent:
+        if not msg.ai_response:
+            continue
+        for key, desc in SAFETY_TRIGGER_DESCRIPTIONS.items():
+            # Use a short unique substring of each description to detect presence
+            if desc[:30] in msg.ai_response:
+                already_shown.add(key)
+
+    return [t for t in triggers if t not in already_shown]

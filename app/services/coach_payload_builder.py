@@ -157,7 +157,7 @@ def build_qa_payload(
     def _r(v: float | None) -> float | None:
         return round(v, 1) if v is not None else None
 
-    return {
+    payload: dict[str, Any] = {
         "question": question,
         "now": now or {},
         "user_name": context.user_name or None,
@@ -169,9 +169,16 @@ def build_qa_payload(
         "averages_last_30_days": {k: _r(v) for k, v in context.avg_30d.items()},
         "recent_tags_last_7_days": context.recent_tags,
         "observations": context.observations,
-        **({"max_heart_rate": context.max_heart_rate} if context.max_heart_rate else {}),
-        **({"height_meter": _round1(context.height_meter)} if context.height_meter else {}),
     }
+    if context.max_heart_rate:
+        payload["max_heart_rate"] = context.max_heart_rate
+    if context.height_meter:
+        payload["height_meter"] = _round1(context.height_meter)
+    if context.user_goal:
+        payload["user_goal"] = context.user_goal
+    if context.recent_events:
+        payload["recent_logs"] = context.recent_events
+    return payload
 
 
 def _metric_block(summary: MetricSummary) -> dict[str, Any] | None:

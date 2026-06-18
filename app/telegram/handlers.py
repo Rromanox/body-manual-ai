@@ -26,6 +26,7 @@ from app.services.baseline_engine import (
     build_daily_snapshot,
     build_qa_context,
     build_weekly_snapshot,
+    filter_fresh_triggers,
     get_checkin_streak,
     get_previous_daily_message,
     safety_message,
@@ -207,7 +208,8 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-        caution = safety_message(snapshot.safety_triggers)
+        fresh_triggers = filter_fresh_triggers(session, user.id, target_date, snapshot.safety_triggers)
+        caution = safety_message(fresh_triggers)
         if caution:
             message_text = f"{message_text}\n\n{caution}"
 
@@ -981,7 +983,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         payload = build_qa_payload(question, qa_ctx, now=now_block(user, now))
         user_id = user.id
 
-        # Last 5 Q&A exchanges as conversation history so the AI remembers the thread
+        # Last 10 Q&A exchanges as conversation history so the AI remembers the thread
         history_rows = session.scalars(
             select(CoachMessage)
             .where(
@@ -990,7 +992,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 CoachMessage.ai_response != "",
             )
             .order_by(CoachMessage.id.desc())
-            .limit(5)
+            .limit(10)
         ).all()
         history: list[dict[str, str]] = []
         for row in reversed(history_rows):
@@ -1031,6 +1033,42 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await update.message.reply_text(response_text)
     log_outgoing(telegram_id, response_text, "q_and_a")
+
+
+HELP_TEXT = """\
+*Body Manual AI — what I can do:*
+
+*Daily*
+/today — morning coach message (recovery, sleep, HRV vs your baselines)
+/checkin — log what happened yesterday (tap tags or add a note)
+/focus — one action item for this week
+
+*Log anything, anytime*
+Just type it — "had pizza at 9pm", "3 drinks tonight", "stressful day", "going to bed before 11 this week". I'll log it and connect it to how your body responds.
+
+*Review*
+/weekly — this week vs your 30-day baseline (asks how the week felt first)
+/manual — your baselines, patterns, and what helps vs hurts
+/history — last 7 daily messages
+/chatlog — full conversation history
+
+*Track*
+/experiment — start a self-test (e.g. "does creatine affect my recovery?")
+/creatine — log creatine and get reminders
+
+*Settings*
+/goal — general health / performance / weight loss
+/timezone — view or update your timezone
+/connect_whoop — connect or reconnect WHOOP
+/connect_withings — connect Withings scale
+/backfill — re-pull up to 365 days of history
+/delete — permanently erase all your data"""
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
 async def chatlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

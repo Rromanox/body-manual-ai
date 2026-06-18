@@ -25,6 +25,7 @@ from app.services.event_engine import enrich_closed_loops_with_meal_gap
 from app.services.observation_engine import build_closed_loops, recalculate_observations
 from app.services.baseline_engine import (
     build_daily_snapshot,
+    filter_fresh_triggers,
     get_checkin_streak,
     get_previous_daily_message,
     safety_message,
@@ -214,7 +215,8 @@ async def _do_send_for_user(user_id: int) -> None:
             await send_admin_alert(f"Morning AI call failed for user {user_id}: {exc}")
             return
 
-        caution = safety_message(snapshot.safety_triggers)
+        fresh_triggers = filter_fresh_triggers(session, user.id, target_date, snapshot.safety_triggers)
+        caution = safety_message(fresh_triggers)
         if caution:
             message_text = f"{message_text}\n\n{caution}"
 
