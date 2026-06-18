@@ -465,6 +465,52 @@ async def goal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.edit_message_text(f"Goal updated to: {labels[new_goal]}. Your morning messages will reflect this.")
 
 
+async def goalweight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set or view target weight in lbs. /goalweight 185"""
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    arg = (context.args or [""])[0].strip()
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+
+        if not arg:
+            if user.goal_weight_lbs is not None:
+                await update.message.reply_text(
+                    f"Your target weight is {user.goal_weight_lbs} lbs.\n\n"
+                    "To update it: /goalweight 185"
+                )
+            else:
+                await update.message.reply_text(
+                    "No target weight set yet.\n\nTo set it: /goalweight 185"
+                )
+            return
+
+        try:
+            new_weight = round(float(arg), 1)
+        except ValueError:
+            await update.message.reply_text("That doesn't look like a number. Try: /goalweight 185")
+            return
+
+        if not (50 <= new_weight <= 600):
+            await update.message.reply_text(
+                "That doesn't look right — enter your goal weight in lbs (e.g. /goalweight 185)."
+            )
+            return
+
+        user.goal_weight_lbs = new_weight
+        session.commit()
+
+    await update.message.reply_text(
+        f"Target weight set to {new_weight} lbs. "
+        "I'll track your progress in your morning messages and when you ask about weight."
+    )
+
+
 async def timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """View or set the user's IANA timezone. /timezone America/New_York"""
     if update.message is None or update.effective_user is None:

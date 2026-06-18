@@ -133,6 +133,31 @@ def build_daily_payload(
     if snapshot.training_intensity:
         payload["training_intensity"] = snapshot.training_intensity
 
+    # Goal weight progress — only when target is set and we have current weight
+    if (
+        user.goal_weight_lbs
+        and snapshot.weight_trend
+        and snapshot.weight_trend.current_weight_lbs is not None
+    ):
+        lbs_to_go = round(snapshot.weight_trend.current_weight_lbs - user.goal_weight_lbs, 1)
+        weight_goal: dict[str, Any] = {
+            "target_lbs": user.goal_weight_lbs,
+            "lbs_to_go": lbs_to_go,
+        }
+        wt = snapshot.weight_trend
+        if (
+            wt.weekly_trend_lbs is not None
+            and abs(wt.weekly_trend_lbs) > 0.05
+            and (
+                (lbs_to_go > 0 and wt.weekly_trend_lbs < 0)
+                or (lbs_to_go < 0 and wt.weekly_trend_lbs > 0)
+            )
+        ):
+            weight_goal["weeks_at_current_pace"] = round(abs(lbs_to_go) / abs(wt.weekly_trend_lbs), 1)
+        if lbs_to_go <= 0:
+            weight_goal["achieved"] = True
+        payload["weight_goal"] = weight_goal
+
     return payload
 
 
@@ -199,6 +224,8 @@ def build_qa_payload(
         payload["about_you"] = context.coach_notes
     if context.sleep_insights:
         payload["sleep_insights"] = context.sleep_insights
+    if context.goal_weight_lbs is not None:
+        payload["goal_weight_lbs"] = context.goal_weight_lbs
     return payload
 
 

@@ -599,6 +599,7 @@ class QAContext:
     supplement_history: list[dict] | None = None  # last 30 days of supplement logs
     coach_notes: dict | None = None  # persistent facts the coach has learned
     sleep_insights: dict | None = None  # bedtime profile, optimal window, factor impact
+    goal_weight_lbs: float | None = None  # user's target weight in lbs
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -751,6 +752,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         supplement_history=supplement_history,
         coach_notes=coach_notes,
         sleep_insights=build_sleep_insights(session, user_id),
+        goal_weight_lbs=getattr(user, "goal_weight_lbs", None) if user else None,
     )
 
 

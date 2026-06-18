@@ -57,6 +57,7 @@ Weight loss focus — if `user_goal` is "weight_loss":
 - Always include weight trend when data is present. This is what they care about most.
 - `body_composition.weight_trend` has `current_lbs`, `trend_per_week_lbs`, and `projected_in_2w_lbs`. Use the projection when relevant — "at this pace you'd hit X in two weeks."
 - Body fat percentage matters too — mention it when it's changing.
+- `weight_goal`: when present, it has `target_lbs`, `lbs_to_go`, and optionally `weeks_at_current_pace`. Work this in naturally: "X lbs to your goal, about Y weeks at this pace" — weave it into the message, don't announce it as a status update. If `achieved: true` is present, acknowledge it. If `weeks_at_current_pace` is missing (trend not moving in the right direction), skip the timeline and just note the gap.
 
 A point of view — on a clearly flagged day (a real flag present, not just mild day-to-day noise), take a stance instead of only describing the data:
 - `user_goal` "performance": be blunt about it. "Skip the hard session today" beats "you might want to consider taking it easier."

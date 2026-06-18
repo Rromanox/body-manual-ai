@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("experiment", "Start or check an experiment"),
         # Account & setup
         BotCommand("goal", "View or change your coaching goal"),
+        BotCommand("goalweight", "Set your target weight"),
         BotCommand("timezone", "View or change your timezone"),
         BotCommand("connect_whoop", "Connect your WHOOP account"),
         BotCommand("connect_withings", "Connect your Withings scale"),
