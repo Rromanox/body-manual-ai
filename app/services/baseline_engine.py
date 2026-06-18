@@ -88,6 +88,7 @@ class DailySnapshot:
     wake_consistency: dict | None = None   # avg wake time + std deviation over last 21 days
     hrv_trend: dict | None = None          # 30d HRV avg now vs 60-90d ago (fitness progress)
     readiness_streak: int = 0             # consecutive days recovery >= 67 (WHOOP green)
+    workout_effect: dict | None = None   # recovery after workout vs rest days (90d lookback)
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -135,7 +136,62 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         wake_consistency=_get_wake_consistency(session, user_id),
         hrv_trend=get_hrv_baseline_trend(session, user_id, target_date),
         readiness_streak=_get_readiness_streak(session, user_id, target_date),
+        workout_effect=get_workout_recovery_effect(session, user_id, target_date),
     )
+
+
+def get_workout_recovery_effect(
+    session: Session,
+    user_id: int,
+    target_date: date,
+    lookback_days: int = 90,
+) -> dict | None:
+    """Compare recovery the day after workout days vs rest days.
+
+    Only returns a result when >= 10 data points in each category AND the
+    difference is >= 5 points — anything smaller is noise.
+    """
+    cutoff = target_date - timedelta(days=lookback_days)
+    rows = session.scalars(
+        select(DailyMetric)
+        .where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= cutoff,
+            DailyMetric.date <= target_date,
+        )
+        .order_by(DailyMetric.date)
+    ).all()
+
+    by_date: dict[date, DailyMetric] = {r.date: r for r in rows}
+
+    workout_next: list[float] = []
+    rest_next: list[float] = []
+    for r in rows:
+        next_row = by_date.get(r.date + timedelta(days=1))
+        if next_row is None or next_row.recovery_score is None:
+            continue
+        if r.workout_count and r.workout_count > 0:
+            workout_next.append(next_row.recovery_score)
+        else:
+            rest_next.append(next_row.recovery_score)
+
+    if len(workout_next) < 10 or len(rest_next) < 10:
+        return None
+
+    workout_avg = sum(workout_next) / len(workout_next)
+    rest_avg = sum(rest_next) / len(rest_next)
+    diff = round(workout_avg - rest_avg, 1)
+    if abs(diff) < 5.0:
+        return None
+
+    return {
+        "after_workout_avg_recovery": round(workout_avg, 1),
+        "after_rest_avg_recovery": round(rest_avg, 1),
+        "difference": diff,
+        "workout_days_analyzed": len(workout_next),
+        "rest_days_analyzed": len(rest_next),
+        "pattern": "lower_after_workout" if diff < 0 else "higher_after_workout",
+    }
 
 
 def _get_readiness_streak(session: Session, user_id: int, target_date: date) -> int:
@@ -722,6 +778,7 @@ class QAContext:
     sleep_insights: dict | None = None  # bedtime profile, optimal window, factor impact
     goal_weight_lbs: float | None = None  # user's target weight in lbs
     hrv_long_trend: dict | None = None    # 30d HRV avg now vs 60-90d ago
+    workout_effect: dict | None = None   # recovery the day after workout vs rest
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -876,6 +933,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         sleep_insights=build_sleep_insights(session, user_id),
         goal_weight_lbs=getattr(user, "goal_weight_lbs", None) if user else None,
         hrv_long_trend=get_hrv_baseline_trend(session, user_id, target_date),
+        workout_effect=get_workout_recovery_effect(session, user_id, target_date),
     )
 
 

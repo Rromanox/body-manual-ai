@@ -140,6 +140,8 @@ def build_daily_payload(
         payload["hrv_long_trend"] = snapshot.hrv_trend
     if snapshot.readiness_streak >= 3:
         payload["readiness_streak_days"] = snapshot.readiness_streak
+    if snapshot.workout_effect:
+        payload["workout_effect"] = snapshot.workout_effect
 
     # Goal weight progress — only when target is set and we have current weight
     if (
@@ -236,6 +238,8 @@ def build_qa_payload(
         payload["goal_weight_lbs"] = context.goal_weight_lbs
     if context.hrv_long_trend:
         payload["hrv_long_trend"] = context.hrv_long_trend
+    if context.workout_effect:
+        payload["workout_effect"] = context.workout_effect
     return payload
 
 
