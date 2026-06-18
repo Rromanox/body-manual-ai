@@ -138,6 +138,8 @@ def build_daily_payload(
         payload["wake_consistency"] = snapshot.wake_consistency
     if snapshot.hrv_trend:
         payload["hrv_long_trend"] = snapshot.hrv_trend
+    if snapshot.readiness_streak >= 3:
+        payload["readiness_streak_days"] = snapshot.readiness_streak
 
     # Goal weight progress — only when target is set and we have current weight
     if (

@@ -87,6 +87,7 @@ class DailySnapshot:
     sleep_debt: dict | None = None          # weekly sleep deficit vs user's own optimal
     wake_consistency: dict | None = None   # avg wake time + std deviation over last 21 days
     hrv_trend: dict | None = None          # 30d HRV avg now vs 60-90d ago (fitness progress)
+    readiness_streak: int = 0             # consecutive days recovery >= 67 (WHOOP green)
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -133,7 +134,34 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         sleep_debt=_get_sleep_debt(session, user_id, target_date),
         wake_consistency=_get_wake_consistency(session, user_id),
         hrv_trend=get_hrv_baseline_trend(session, user_id, target_date),
+        readiness_streak=_get_readiness_streak(session, user_id, target_date),
     )
+
+
+def _get_readiness_streak(session: Session, user_id: int, target_date: date) -> int:
+    """Consecutive days (up to and including today) where recovery >= 67.
+
+    Returns 0 when streak < 3 — not worth surfacing until there's a real pattern.
+    """
+    rows = session.scalars(
+        select(DailyMetric)
+        .where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date <= target_date,
+            DailyMetric.recovery_score.is_not(None),
+        )
+        .order_by(DailyMetric.date.desc())
+        .limit(90)
+    ).all()
+
+    streak = 0
+    for r in rows:
+        if r.recovery_score >= 67:
+            streak += 1
+        else:
+            break
+
+    return streak if streak >= 3 else 0
 
 
 def _get_wake_consistency(session: Session, user_id: int) -> dict | None:
