@@ -65,6 +65,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("chatlog", handlers.chatlog))
     application.add_handler(CommandHandler("backfill", handlers.backfill))
     application.add_handler(CommandHandler("delete", handlers.delete))
+    application.add_handler(CommandHandler("help", handlers.help_command))
 
     application.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci_"))
     application.add_handler(CallbackQueryHandler(handlers.supplement_callback, pattern=r"^supp_"))

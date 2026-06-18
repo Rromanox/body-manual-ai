@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("backfill", "Re-pull 365 days of WHOOP + Withings data"),
         BotCommand("delete", "Permanently delete all your data"),
         BotCommand("start", "Set up your account"),
+        BotCommand("help", "What this bot can do"),
     ])
     await application.start()
 
