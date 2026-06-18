@@ -795,6 +795,7 @@ class WeeklySnapshot:
     avg_strain_7d: float | None
     data_days_available: int
     data_maturity: str
+    tag_patterns: list[dict] | None = None  # top behavior-recovery correlations (30d)
 
 
 def build_weekly_snapshot(session: Session, user_id: int, target_date: date) -> WeeklySnapshot:
@@ -814,6 +815,11 @@ def build_weekly_snapshot(session: Session, user_id: int, target_date: date) -> 
                 flag = "elevated" if ratio > 1.1 else ("lower_than_usual" if ratio < 0.9 else None)
         return MetricSummary(today=week_avg, baseline_7d=None, baseline_30d=month_avg, flag=flag)
 
+    from app.services.sleep_optimizer import get_pre_sleep_factor_impact
+    raw_patterns = get_pre_sleep_factor_impact(session, user_id, lookback_days=30)
+    # Keep top 5 by absolute delta — most striking patterns, both good and bad
+    tag_patterns = sorted(raw_patterns, key=lambda x: abs(x.get("delta_vs_no_tag") or 0), reverse=True)[:5]
+
     return WeeklySnapshot(
         recovery=_weekly(DailyMetric.recovery_score),
         sleep_hours=_weekly(DailyMetric.sleep_hours),
@@ -822,6 +828,7 @@ def build_weekly_snapshot(session: Session, user_id: int, target_date: date) -> 
         avg_strain_7d=_avg(session, user_id, DailyMetric.strain, week_start, yesterday),
         data_days_available=_data_days_available(session, user_id, target_date),
         data_maturity=_maturity(_data_days_available(session, user_id, target_date)),
+        tag_patterns=tag_patterns or None,
     )
 
 

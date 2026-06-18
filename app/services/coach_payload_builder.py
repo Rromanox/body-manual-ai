@@ -200,6 +200,8 @@ def build_weekly_payload(
             payload[key] = block
     if snapshot.avg_strain_7d is not None:
         payload["avg_strain_7d"] = _round1(snapshot.avg_strain_7d)
+    if snapshot.tag_patterns:
+        payload["behavior_patterns"] = snapshot.tag_patterns
     return payload
 
 
