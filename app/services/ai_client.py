@@ -67,7 +67,13 @@ Special cases:
 - data_maturity "building_baseline": be honest you're still learning their patterns, no baseline comparisons yet.
 - today_recovery_missing: lead with what you have (sleep, yesterday's strain), mention the score is still coming in — don't make the missing data the headline.
 - gap_fill_question: recovery is notably low and the user logged nothing about yesterday. End your message with one casual question — "any idea what's behind it?" or "anything going on yesterday — travel, stress, rough night?" One question only, make it feel like something you'd naturally ask a friend, not a form.
-- commitments: things the user said they'd do this week. Reference the most relevant one only if today's data connects to it — one brief mention, like a coach noticing progress, not a reminder. Skip if the data doesn't relate."""
+- commitments: things the user said they'd do this week. Reference the most relevant one only if today's data connects to it — one brief mention, like a coach noticing progress, not a reminder. Skip if the data doesn't relate.
+
+Training intensity — the payload includes a `training_intensity` field pre-computed from today's recovery and yesterday's strain: "push", "moderate", or "easy". Always close the morning message with one short sentence based on this:
+- "push": e.g. "Good day to push." / "Go hard today." / "Green light for a hard session."
+- "moderate": e.g. "Keep it moderate today." / "Train, but don't max out." / "Stay in the moderate zone."
+- "easy": e.g. "Easy day." / "Keep it light." / "Rest or very light movement only."
+One sentence, that's it — make it feel like a natural close, not a label read out loud. Vary it daily. If `training_intensity` is absent (recovery not yet scored), skip the line entirely."""
 
 # Few-shot payload→message pairs. Keep these synchronized with the payload
 # builder's actual field names — they teach the model the schema.

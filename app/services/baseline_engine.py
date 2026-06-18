@@ -83,6 +83,7 @@ class DailySnapshot:
     tag_streaks: list[dict] | None = None   # tags logged N days in a row (N>=2)
     creatine_streak: int = 0                # consecutive days creatine was taken
     bedtime_deviation: dict | None = None   # last night's bedtime vs optimal window
+    training_intensity: str | None = None   # "push" | "moderate" | "easy" — pre-computed from recovery + strain
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -104,13 +105,14 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         hrv.flag = _flag_hrv(hrv)
 
     weight_trend = _build_weight_trend(session, user_id, target_date)
+    yesterday_strain_label = _classify_strain(yesterday_row.strain if yesterday_row else None)
     return DailySnapshot(
         target_date=target_date,
         recovery=recovery,
         sleep_hours=sleep_hours,
         resting_hr=resting_hr,
         hrv=hrv,
-        yesterday_strain=_classify_strain(yesterday_row.strain if yesterday_row else None),
+        yesterday_strain=yesterday_strain_label,
         yesterday_workout_count=yesterday_row.workout_count if yesterday_row else None,
         yesterday_workout_minutes=yesterday_row.total_workout_minutes if yesterday_row else None,
         data_days_available=data_days,
@@ -124,7 +126,27 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         tag_streaks=_get_tag_streaks(session, user_id, target_date) or None,
         creatine_streak=_get_supplement_streak(session, user_id, target_date),
         bedtime_deviation=_get_bedtime_deviation(session, user_id, target_date),
+        training_intensity=_compute_training_intensity(recovery.today, yesterday_strain_label),
     )
+
+
+def _compute_training_intensity(
+    recovery_score: float | None,
+    yesterday_strain: str | None,
+) -> str | None:
+    """'push' / 'moderate' / 'easy' — computed from today's recovery and yesterday's strain.
+
+    The AI narrates this; it never derives it itself.
+    """
+    if recovery_score is None:
+        return None
+    if recovery_score >= 67:
+        if yesterday_strain == "high":
+            return "moderate"  # body still absorbing high-strain load
+        return "push"
+    if recovery_score >= 34:
+        return "moderate"
+    return "easy"
 
 
 def _get_bedtime_deviation(session: Session, user_id: int, target_date: date) -> dict | None:

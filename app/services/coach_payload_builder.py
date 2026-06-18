@@ -130,6 +130,8 @@ def build_daily_payload(
         payload["about_you"] = coach_notes
     if snapshot.bedtime_deviation:
         payload["bedtime_deviation"] = snapshot.bedtime_deviation
+    if snapshot.training_intensity:
+        payload["training_intensity"] = snapshot.training_intensity
 
     return payload
 
