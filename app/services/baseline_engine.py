@@ -86,6 +86,7 @@ class DailySnapshot:
     training_intensity: str | None = None   # "push" | "moderate" | "easy" — pre-computed from recovery + strain
     sleep_debt: dict | None = None          # weekly sleep deficit vs user's own optimal
     wake_consistency: dict | None = None   # avg wake time + std deviation over last 21 days
+    hrv_trend: dict | None = None          # 30d HRV avg now vs 60-90d ago (fitness progress)
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -131,6 +132,7 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         training_intensity=_compute_training_intensity(recovery.today, yesterday_strain_label),
         sleep_debt=_get_sleep_debt(session, user_id, target_date),
         wake_consistency=_get_wake_consistency(session, user_id),
+        hrv_trend=get_hrv_baseline_trend(session, user_id, target_date),
     )
 
 
@@ -165,6 +167,79 @@ def _compute_training_intensity(
     if recovery_score >= 34:
         return "moderate"
     return "easy"
+
+
+def get_hrv_baseline_trend(
+    session: Session,
+    user_id: int,
+    target_date: date,
+) -> dict | None:
+    """Compare current 30-day HRV average to 30-day average from 60-90 days ago.
+
+    Only returns a result when:
+    - At least 60 days of data exist
+    - Both windows have at least 10 readings
+    - The change is >= 5% (meaningful signal, not noise)
+    """
+    data_days = _data_days_available(session, user_id, target_date)
+    if data_days < 60:
+        return None
+
+    current_end = target_date - timedelta(days=1)
+    current_start = target_date - timedelta(days=30)
+    hist_end = target_date - timedelta(days=61)
+    hist_start = target_date - timedelta(days=90)
+
+    from sqlalchemy import func as sqlfunc
+    current_avg = session.scalar(
+        select(sqlfunc.avg(DailyMetric.hrv_ms)).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= current_start,
+            DailyMetric.date <= current_end,
+            DailyMetric.hrv_ms.is_not(None),
+        )
+    )
+    hist_avg = session.scalar(
+        select(sqlfunc.avg(DailyMetric.hrv_ms)).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= hist_start,
+            DailyMetric.date <= hist_end,
+            DailyMetric.hrv_ms.is_not(None),
+        )
+    )
+    # Require enough readings in each window
+    current_count = session.scalar(
+        select(sqlfunc.count(DailyMetric.hrv_ms)).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= current_start,
+            DailyMetric.date <= current_end,
+            DailyMetric.hrv_ms.is_not(None),
+        )
+    )
+    hist_count = session.scalar(
+        select(sqlfunc.count(DailyMetric.hrv_ms)).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= hist_start,
+            DailyMetric.date <= hist_end,
+            DailyMetric.hrv_ms.is_not(None),
+        )
+    )
+    if not current_avg or not hist_avg or (current_count or 0) < 10 or (hist_count or 0) < 10:
+        return None
+
+    abs_change = round(float(current_avg) - float(hist_avg), 1)
+    pct_change = round((abs_change / float(hist_avg)) * 100, 1)
+    if abs(pct_change) < 5.0:
+        return None  # noise — not worth surfacing
+
+    return {
+        "current_30d_avg_ms": round(float(current_avg), 1),
+        "historical_30d_avg_ms": round(float(hist_avg), 1),
+        "change_ms": abs_change,
+        "change_pct": pct_change,
+        "direction": "improving" if abs_change > 0 else "declining",
+        "comparison_period": "past 90 days",
+    }
 
 
 def _get_bedtime_deviation(session: Session, user_id: int, target_date: date) -> dict | None:
@@ -618,6 +693,7 @@ class QAContext:
     coach_notes: dict | None = None  # persistent facts the coach has learned
     sleep_insights: dict | None = None  # bedtime profile, optimal window, factor impact
     goal_weight_lbs: float | None = None  # user's target weight in lbs
+    hrv_long_trend: dict | None = None    # 30d HRV avg now vs 60-90d ago
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -771,6 +847,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         coach_notes=coach_notes,
         sleep_insights=build_sleep_insights(session, user_id),
         goal_weight_lbs=getattr(user, "goal_weight_lbs", None) if user else None,
+        hrv_long_trend=get_hrv_baseline_trend(session, user_id, target_date),
     )
 
 

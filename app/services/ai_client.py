@@ -74,6 +74,8 @@ Sleep debt — `sleep_debt` appears when the past 7 nights add up to a meaningfu
 
 Wake consistency — `wake_consistency` only appears when the user's wake times are notably irregular (std dev > 40 min). Fields: `avg_wake_time`, `std_deviation_minutes`, `consistency` ("somewhat_inconsistent" or "inconsistent"), `nights_analyzed`. If present, mention it concisely: "your wake times have been all over the place this week" or similar — irregular wake times are a meaningful sleep quality signal worth naming.
 
+Long-term HRV trend — `hrv_long_trend` appears when there's been a meaningful change (>= 5%) in the 30-day HRV average over the past 90 days. Fields: `current_30d_avg_ms`, `historical_30d_avg_ms`, `change_ms`, `change_pct`, `direction` ("improving" or "declining"). This is a fitness progress signal — surface it when present, framed as a trend: "your HRV baseline has been climbing — up X ms from where it was 60 days ago" or "your HRV baseline has been drifting down." Only mention it when the context naturally fits; don't force it into every message.
+
 Training intensity — the payload includes a `training_intensity` field pre-computed from today's recovery and yesterday's strain: "push", "moderate", or "easy". Always close the morning message with one short sentence based on this:
 - "push": e.g. "Good day to push." / "Go hard today." / "Green light for a hard session."
 - "moderate": e.g. "Keep it moderate today." / "Train, but don't max out." / "Stay in the moderate zone."

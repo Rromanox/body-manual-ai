@@ -136,6 +136,8 @@ def build_daily_payload(
         payload["sleep_debt"] = snapshot.sleep_debt
     if snapshot.wake_consistency:
         payload["wake_consistency"] = snapshot.wake_consistency
+    if snapshot.hrv_trend:
+        payload["hrv_long_trend"] = snapshot.hrv_trend
 
     # Goal weight progress — only when target is set and we have current weight
     if (
@@ -230,6 +232,8 @@ def build_qa_payload(
         payload["sleep_insights"] = context.sleep_insights
     if context.goal_weight_lbs is not None:
         payload["goal_weight_lbs"] = context.goal_weight_lbs
+    if context.hrv_long_trend:
+        payload["hrv_long_trend"] = context.hrv_long_trend
     return payload
 
 
