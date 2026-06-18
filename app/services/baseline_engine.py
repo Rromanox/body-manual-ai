@@ -82,6 +82,7 @@ class DailySnapshot:
     yesterday_hrv: float | None = None
     tag_streaks: list[dict] | None = None   # tags logged N days in a row (N>=2)
     creatine_streak: int = 0                # consecutive days creatine was taken
+    bedtime_deviation: dict | None = None   # last night's bedtime vs optimal window
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -122,7 +123,13 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         yesterday_hrv=yesterday_row.hrv_ms if yesterday_row else None,
         tag_streaks=_get_tag_streaks(session, user_id, target_date) or None,
         creatine_streak=_get_supplement_streak(session, user_id, target_date),
+        bedtime_deviation=_get_bedtime_deviation(session, user_id, target_date),
     )
+
+
+def _get_bedtime_deviation(session: Session, user_id: int, target_date: date) -> dict | None:
+    from app.services.sleep_optimizer import get_bedtime_deviation
+    return get_bedtime_deviation(session, user_id, target_date)
 
 
 def safety_message(triggers: list[str]) -> str | None:
@@ -569,6 +576,7 @@ class QAContext:
     recent_events: list[dict] | None = None  # last 14 days of logged events
     supplement_history: list[dict] | None = None  # last 30 days of supplement logs
     coach_notes: dict | None = None  # persistent facts the coach has learned
+    sleep_insights: dict | None = None  # bedtime profile, optimal window, factor impact
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -576,6 +584,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
     from app.models.journal_entry import JournalEntry
     from app.models.observation import Observation
     from app.models.supplement_log import SupplementLog
+    from app.services.sleep_optimizer import build_sleep_insights
 
     yesterday = target_date - timedelta(days=1)
     week_start = target_date - timedelta(days=7)
@@ -719,6 +728,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         recent_events=recent_events or None,
         supplement_history=supplement_history,
         coach_notes=coach_notes,
+        sleep_insights=build_sleep_insights(session, user_id),
     )
 
 

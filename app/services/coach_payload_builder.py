@@ -128,6 +128,8 @@ def build_daily_payload(
         payload["creatine_streak_days"] = snapshot.creatine_streak
     if coach_notes:
         payload["about_you"] = coach_notes
+    if snapshot.bedtime_deviation:
+        payload["bedtime_deviation"] = snapshot.bedtime_deviation
 
     return payload
 
@@ -193,6 +195,8 @@ def build_qa_payload(
         payload["supplement_history"] = context.supplement_history
     if context.coach_notes:
         payload["about_you"] = context.coach_notes
+    if context.sleep_insights:
+        payload["sleep_insights"] = context.sleep_insights
     return payload
 
 
