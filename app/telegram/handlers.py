@@ -20,7 +20,7 @@ from app.models.journal_entry import JournalEntry
 from app.models.oauth_connection import OAuthConnection
 from app.models.observation import Observation
 from app.models.user import User
-from app.services.ai_client import classify_and_extract, generate_daily_message, generate_focus_response, generate_qa_response, generate_weekly_message
+from app.services.ai_client import classify_and_extract, extract_user_facts, generate_daily_message, generate_focus_response, generate_qa_response, generate_weekly_message
 from app.services.alerts import send_admin_alert
 from app.services.baseline_engine import (
     build_daily_snapshot,
@@ -1033,6 +1033,42 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await update.message.reply_text(response_text)
     log_outgoing(telegram_id, response_text, "q_and_a")
+
+    # Background: extract persistent facts from this exchange and merge into coach_notes
+    asyncio.create_task(_update_coach_notes(user_id, question, response_text))
+
+
+async def _update_coach_notes(user_id: int, user_message: str, ai_response: str) -> None:
+    """Extract lasting personal facts from a Q&A exchange and save to user.coach_notes."""
+    try:
+        with SessionLocal() as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return
+            existing = user.coach_notes if isinstance(user.coach_notes, dict) else {}
+
+        new_facts = await extract_user_facts(user_message, ai_response, existing)
+        if not new_facts:
+            return
+
+        with SessionLocal() as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return
+            merged = dict(user.coach_notes) if isinstance(user.coach_notes, dict) else {}
+            for key, val in new_facts.items():
+                if isinstance(val, list):
+                    existing_list = merged.get(key, [])
+                    for item in val:
+                        if item not in existing_list:
+                            existing_list.append(item)
+                    merged[key] = existing_list
+                else:
+                    merged[key] = val
+            user.coach_notes = merged
+            session.commit()
+    except Exception:
+        pass  # never let background fact extraction crash anything
 
 
 HELP_TEXT = """\

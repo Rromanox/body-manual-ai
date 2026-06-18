@@ -178,6 +178,10 @@ def build_qa_payload(
         payload["user_goal"] = context.user_goal
     if context.recent_events:
         payload["recent_logs"] = context.recent_events
+    if context.supplement_history:
+        payload["supplement_history"] = context.supplement_history
+    if context.coach_notes:
+        payload["about_you"] = context.coach_notes
     return payload
 
 

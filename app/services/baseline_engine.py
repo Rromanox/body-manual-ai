@@ -476,12 +476,15 @@ class QAContext:
     height_meter: float | None = None
     user_goal: str | None = None
     recent_events: list[dict] | None = None  # last 14 days of logged events
+    supplement_history: list[dict] | None = None  # last 30 days of supplement logs
+    coach_notes: dict | None = None  # persistent facts the coach has learned
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
     from app.models.event import Event
     from app.models.journal_entry import JournalEntry
     from app.models.observation import Observation
+    from app.models.supplement_log import SupplementLog
 
     yesterday = target_date - timedelta(days=1)
     week_start = target_date - timedelta(days=7)
@@ -586,6 +589,28 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         for r in event_rows
     ]
 
+    supp_cutoff = target_date - timedelta(days=30)
+    supp_rows = session.scalars(
+        select(SupplementLog)
+        .where(
+            SupplementLog.user_id == user_id,
+            SupplementLog.date >= supp_cutoff,
+            SupplementLog.date <= target_date,
+        )
+        .order_by(SupplementLog.date.desc())
+    ).all()
+    supplement_history = [
+        {
+            "date": str(r.date),
+            "name": r.name,
+            "taken": r.taken,
+        }
+        for r in supp_rows
+    ] or None
+
+    raw_notes = getattr(user, "coach_notes", None) if user else None
+    coach_notes = raw_notes if isinstance(raw_notes, dict) and raw_notes else None
+
     data_days = _data_days_available(session, user_id, target_date)
     return QAContext(
         data_days_available=data_days,
@@ -601,6 +626,8 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         height_meter=getattr(user, "height_meter", None) if user else None,
         user_goal=getattr(user, "goal", None) if user else None,
         recent_events=recent_events or None,
+        supplement_history=supplement_history,
+        coach_notes=coach_notes,
     )
 
 
