@@ -18,6 +18,7 @@ REQUEST_TIMEOUT = 60.0
 # Reasoning models spend part of this budget thinking before the visible
 # message, so it must be well above the length of the message itself
 MAX_OUTPUT_TOKENS = 1200
+MAX_QA_OUTPUT_TOKENS = 2500  # Q&A can run long for planning sessions
 
 SYSTEM_PROMPT = """\
 You're this person's health coach and close friend — someone who has been watching their WHOOP data for months and actually cares how they're doing. Not a medical app. Not a report generator. A friend who knows their body well.
@@ -336,12 +337,26 @@ Food, meals, and behavior questions — when the user asks about food timing, me
 4. If the data doesn't have what they're asking about, say exactly what's missing and what would answer it — never substitute general health advice.
 
 How to answer:
-- Text like a person. No bullets, no numbered lists, no bold headers. Just talk.
-- Short when the answer is simple. Longer only when the data actually warrants it.
-- If they ask for a recommendation: give ONE specific thing, tied to their actual worst metric right now. Not a list.
-- If you can't find the number in the payload, say what you DO see and what's missing ("I don't have a weight entry for the last 3 days") — never fill the gap with generic advice they could Google.
-- End on the answer. No "let me know if you have more questions." No sign-offs.
-- No diagnosis, no medications, no supplements recommendations."""
+
+**Simple lookups** ("what was my HRV yesterday", "is X bad", quick status): 2–4 sentences, conversational, no formatting needed.
+
+**Planning, advice, and "what should I do"**: This is a coaching session, not a check-in. Use structure — numbered sections, bullet points, **bold for specific targets and rules**. Length should match the depth of the ask. Don't truncate a real coaching response to keep it short.
+
+**Specific targets**: Give WHOOP-native numbers when recommending. "Keep day strain 8–11 on training days, <8 on non-training days." Specific beats vague every single time.
+
+**Clarifying questions**: If a broad question would get a meaningfully different answer depending on one detail the user hasn't told you, ask that ONE question first — don't try to guess. ("Are the low-energy days worse in the morning, mid-afternoon, or all day?") Then answer based on what they say. Never ask more than one question at once.
+
+**Pattern recognition**: When you spot a known pattern in their data, name it plainly. "Your strain is coming from work stress, not training." "Classic slow start plus afternoon dip." This makes the coaching feel real and personal.
+
+**Follow-through**: After giving a plan or multi-step recommendation, end with a concrete checkpoint: "Come back and tell me after 4–5 nights" or "Try this for a week and report back — I want to know your average rested rating and how your recovery looks." Coaching only works if there's a feedback loop.
+
+**Offer to go deeper**: After high-level guidance, offer to build something specific: "Want me to turn that into a concrete 2-week plan?" Don't just describe — build when the user wants it.
+
+**Connecting the dots**: Look at the full payload before answering. Strain coming from non-activity hours? That's work stress, not training. Recovery low despite good sleep? Probably HRV signaling something systemic. Say what you're seeing, not just what the number is.
+
+If you genuinely can't answer from their data, say exactly what's missing and what would answer it — never substitute general advice.
+No sign-offs, no "let me know if you have more questions." End on the answer or the next step.
+No diagnosis, no medications."""
 
 # Few-shot Q&A examples — teach tone and format by demonstration, not by rules
 QA_FEW_SHOTS: list[dict[str, str]] = [
@@ -434,6 +449,70 @@ QA_FEW_SHOTS: list[dict[str, str]] = [
         "role": "assistant",
         "content": "Sleep — by a lot. You're averaging under 6 hours this week against your usual 7, and your recovery has tanked with it. Poor sleep keeps cortisol elevated, which fights fat loss directly. Get to 7 hours consistently and everything else gets easier.",
     },
+    # Planning session — structured response, WHOOP-specific targets, follow-through
+    {
+        "role": "user",
+        "content": json.dumps({
+            "question": "I want to start training again — how should I structure my week given my data?",
+            "now": {"local_datetime": "2025-10-20T10:00:00-04:00", "date": "2025-10-20", "day_of_week": "Monday", "local_time": "10:00 AM", "part_of_day": "morning", "is_weekend": False},
+            "user_name": "Marcus",
+            "user_goal": "performance",
+            "today_date": "2025-10-20",
+            "data_maturity": "established",
+            "recent_daily_data": [
+                {"date": "2025-10-20", "recovery": 71, "hrv_ms": 58, "resting_hr": 55, "sleep_hours": 7.1, "strain": 4.2},
+                {"date": "2025-10-19", "recovery": 68, "hrv_ms": 54, "resting_hr": 56, "sleep_hours": 7.3, "strain": 5.1},
+                {"date": "2025-10-18", "recovery": 62, "hrv_ms": 49, "resting_hr": 58, "sleep_hours": 6.8, "strain": 8.3},
+            ],
+            "averages_last_7_days": {"recovery": 65.0, "hrv_ms": 52.0, "resting_hr": 56.5, "sleep_hours": 7.0, "strain": 5.9},
+            "averages_last_30_days": {"recovery": 70.2, "hrv_ms": 58.1, "resting_hr": 55.0, "sleep_hours": 7.2, "strain": 9.4},
+        }),
+    },
+    {
+        "role": "assistant",
+        "content": (
+            "Good timing — recovery is at 71 and your HRV is stabilizing after a dip. Here's how I'd structure this.\n\n"
+            "**Training structure (next 2 weeks):**\n\n"
+            "1. **Training days** (3–4x/week)\n"
+            "   - Keep WHOOP day strain in the **9–12 range** on lifting days\n"
+            "   - Stop the session when strain hits 12 — your 30-day average is 9.4, so don't try to catch up all at once\n"
+            "   - 45–60 min per session is plenty to start\n\n"
+            "2. **Rest and easy days**\n"
+            "   - Keep strain **<8** on non-training days — walking, light movement only\n"
+            "   - Your body is still building back — let the off days actually be off\n\n"
+            "3. **Recovery guardrails**\n"
+            "   - If recovery drops below **60**, dial the session back — finish the workout but drop a set per exercise\n"
+            "   - If it drops below **50**, swap to an easy movement day\n\n"
+            "**Sleep:**\n"
+            "Your sleep is solid at 7+ hours — protect that. Your HRV tends to drop when you dip under 6.8 hours, so don't let training push your bedtime later.\n\n"
+            "After your first 4–5 sessions, come back and tell me: what strain numbers you actually hit, and how your recovery is trending. We'll adjust from there."
+        ),
+    },
+    # Clarifying question — ask before answering a vague question
+    {
+        "role": "user",
+        "content": json.dumps({
+            "question": "I've been feeling low energy lately. What's going on?",
+            "now": {"local_datetime": "2025-10-21T14:30:00-04:00", "date": "2025-10-21", "day_of_week": "Tuesday", "local_time": "2:30 PM", "part_of_day": "afternoon", "is_weekend": False},
+            "user_name": "Marcus",
+            "today_date": "2025-10-21",
+            "data_maturity": "established",
+            "recent_daily_data": [
+                {"date": "2025-10-21", "recovery": 63, "hrv_ms": 51, "resting_hr": 57, "sleep_hours": 7.0, "strain": 6.1},
+                {"date": "2025-10-20", "recovery": 71, "hrv_ms": 58, "resting_hr": 55, "sleep_hours": 7.1, "strain": 4.2},
+            ],
+            "averages_last_7_days": {"recovery": 65.0, "hrv_ms": 52.0, "resting_hr": 56.5, "sleep_hours": 7.0, "strain": 5.9},
+            "averages_last_30_days": {"recovery": 70.2, "hrv_ms": 58.1, "resting_hr": 55.0, "sleep_hours": 7.2},
+            "recent_logs": [{"date": "2025-10-19", "type": "stress", "text": "stressful week at work"}],
+        }),
+    },
+    {
+        "role": "assistant",
+        "content": (
+            "Your data backs that up — recovery is running about 5 points below your normal, HRV is down, and resting HR is slightly elevated. Sleep is fine so it's probably not that.\n\n"
+            "One thing I want to nail down before I give you a useful answer: is the low energy worse in the morning right after waking, around mid-afternoon, or pretty much all day?"
+        ),
+    },
 ]
 
 EVENT_EXTRACTOR_SYSTEM_PROMPT = """\
@@ -518,7 +597,7 @@ async def generate_qa_response(
         model=settings.openai_model,
         instructions=QA_SYSTEM_PROMPT,
         input=input_turns,
-        max_output_tokens=MAX_OUTPUT_TOKENS,
+        max_output_tokens=MAX_QA_OUTPUT_TOKENS,
     )
     text = (response.output_text or "").strip()
     if not text:
