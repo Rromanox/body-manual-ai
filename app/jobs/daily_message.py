@@ -35,7 +35,7 @@ from app.models.daily_metric import DailyMetric
 from app.services.coach_payload_builder import build_daily_payload
 from app.services.timekit import get_user_now, get_user_today
 from app.services.whoop_client import WhoopAuthError
-from app.services.withings_client import WithingsAuthError
+from app.services.withings_client import WithingsAuthError, WithingsRateLimitError
 from app.telegram.bot import get_application
 from app.telegram.keyboards import checkin_keyboard
 
@@ -160,6 +160,10 @@ async def _do_send_for_user(user_id: int) -> None:
             if _u:
                 withings_telegram_id = _u.telegram_id
         await pull_withings_and_store(user_id, days=7)
+    except WithingsRateLimitError as exc:
+        # Another request (e.g. an incoming webhook) already refreshed the token.
+        # The pull will be retried next time; WHOOP data still drives the message.
+        logger.info("Withings rate-limited for user %s, skipping pull: %s", user_id, exc)
     except WithingsAuthError as exc:
         logger.warning("Withings auth broken for user %s: %s", user_id, exc)
         await send_admin_alert(f"Withings auth broken for user {user_id}: {exc}")

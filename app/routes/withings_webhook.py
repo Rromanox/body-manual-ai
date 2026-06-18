@@ -7,6 +7,7 @@ matching user so daily_metrics is always up to date.
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, Form, Response
 from sqlalchemy import select
@@ -18,6 +19,11 @@ from app.services.alerts import send_admin_alert
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Debounce: Withings can fire duplicate webhook notifications within seconds.
+# Track the last pull time per user; skip if a pull happened in the last 60s.
+_last_webhook_pull: dict[int, float] = {}
+_WEBHOOK_DEBOUNCE_SECS = 60.0
 
 
 @router.post("/webhooks/withings")
@@ -64,7 +70,16 @@ async def withings_webhook(
     )
 
     async def _pull_all() -> None:
+        now_ts = time.monotonic()
         for uid in user_ids:
+            last = _last_webhook_pull.get(uid, 0.0)
+            if now_ts - last < _WEBHOOK_DEBOUNCE_SECS:
+                logger.info(
+                    "Withings webhook debounced for user %s (last pull %.0fs ago)",
+                    uid, now_ts - last,
+                )
+                continue
+            _last_webhook_pull[uid] = now_ts
             try:
                 written = await pull_withings_and_store(uid, days=3)
                 logger.info("Withings webhook pull: %s days updated for user %s", written, uid)

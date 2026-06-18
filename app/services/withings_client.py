@@ -6,6 +6,7 @@ refresh call. A rejected refresh marks the connection broken.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -51,6 +52,15 @@ class WithingsApiError(RuntimeError):
     """Withings API returned an unexpected error."""
 
 
+class WithingsRateLimitError(RuntimeError):
+    """Status 601: same refresh call made twice within Withings' cooldown window."""
+
+
+# Per-user asyncio lock: prevents two concurrent coroutines from refreshing the
+# same token simultaneously (the second 601s because the token is already being used).
+_token_refresh_locks: dict[int, asyncio.Lock] = {}
+
+
 def redirect_uri() -> str:
     return f"{settings.base_url}/auth/withings/callback"
 
@@ -93,29 +103,55 @@ def apply_token_response(connection: OAuthConnection, token_data: dict[str, Any]
 
 
 async def ensure_fresh_access_token(session: Session, connection: OAuthConnection) -> str:
-    """Return a valid access token, refreshing (and persisting) if needed."""
+    """Return a valid access token, refreshing (and persisting) if needed.
+
+    Uses a per-user asyncio lock so concurrent coroutines (e.g. morning pull +
+    webhook pull firing in the same second) don't both try to refresh the same
+    token — Withings 601s the second attempt within their 10-second window.
+    """
     now = datetime.now(timezone.utc)
     if connection.expires_at is not None and connection.expires_at - REFRESH_MARGIN > now:
         return connection.access_token
 
-    try:
-        token_data = await _token_request(
-            {
-                "action": "requesttoken",
-                "grant_type": "refresh_token",
-                "client_id": settings.withings_client_id,
-                "client_secret": settings.withings_client_secret,
-                "refresh_token": connection.refresh_token,
-            }
-        )
-    except WithingsAuthError:
-        connection.status = "broken"
-        session.commit()
-        raise
+    # Get or create a per-user lock
+    user_id = connection.user_id
+    if user_id not in _token_refresh_locks:
+        _token_refresh_locks[user_id] = asyncio.Lock()
+    lock = _token_refresh_locks[user_id]
 
-    apply_token_response(connection, token_data)
-    session.commit()
-    return connection.access_token
+    async with lock:
+        # Re-read inside the lock — another coroutine may have just refreshed
+        session.refresh(connection)
+        now = datetime.now(timezone.utc)
+        if connection.expires_at is not None and connection.expires_at - REFRESH_MARGIN > now:
+            return connection.access_token
+
+        try:
+            token_data = await _token_request(
+                {
+                    "action": "requesttoken",
+                    "grant_type": "refresh_token",
+                    "client_id": settings.withings_client_id,
+                    "client_secret": settings.withings_client_secret,
+                    "refresh_token": connection.refresh_token,
+                }
+            )
+        except WithingsRateLimitError:
+            # A parallel request (different process/pod) already refreshed — re-read
+            session.refresh(connection)
+            logger.info(
+                "Withings 601 for user %s — re-read token after rate-limit, expiry=%s",
+                user_id, connection.expires_at,
+            )
+            return connection.access_token
+        except WithingsAuthError:
+            connection.status = "broken"
+            session.commit()
+            raise
+
+        apply_token_response(connection, token_data)
+        session.commit()
+        return connection.access_token
 
 
 async def _token_request(data: dict[str, str]) -> dict[str, Any]:
@@ -129,7 +165,12 @@ async def _token_request(data: dict[str, str]) -> dict[str, Any]:
 
     body = response.json()
     status = body.get("status", -1)
-    if status == 401 or status == 100:
+    if status == 601:
+        # "Same arguments in less than 10 seconds" — a concurrent refresh beat us
+        raise WithingsRateLimitError(
+            f"Withings 601 rate limit: {body}"
+        )
+    if status in (401, 100):
         raise WithingsAuthError(
             f"Withings token rejected (status={status}): {body}"
         )
