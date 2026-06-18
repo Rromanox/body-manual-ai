@@ -132,6 +132,8 @@ def build_daily_payload(
         payload["bedtime_deviation"] = snapshot.bedtime_deviation
     if snapshot.training_intensity:
         payload["training_intensity"] = snapshot.training_intensity
+    if snapshot.sleep_debt and snapshot.sleep_debt.get("weekly_deficit_hours", 0) >= 1.0:
+        payload["sleep_debt"] = snapshot.sleep_debt
 
     # Goal weight progress — only when target is set and we have current weight
     if (

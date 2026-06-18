@@ -84,6 +84,7 @@ class DailySnapshot:
     creatine_streak: int = 0                # consecutive days creatine was taken
     bedtime_deviation: dict | None = None   # last night's bedtime vs optimal window
     training_intensity: str | None = None   # "push" | "moderate" | "easy" — pre-computed from recovery + strain
+    sleep_debt: dict | None = None          # weekly sleep deficit vs user's own optimal
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -127,7 +128,13 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         creatine_streak=_get_supplement_streak(session, user_id, target_date),
         bedtime_deviation=_get_bedtime_deviation(session, user_id, target_date),
         training_intensity=_compute_training_intensity(recovery.today, yesterday_strain_label),
+        sleep_debt=_get_sleep_debt(session, user_id, target_date),
     )
+
+
+def _get_sleep_debt(session: Session, user_id: int, target_date: date) -> dict | None:
+    from app.services.sleep_optimizer import calculate_sleep_debt
+    return calculate_sleep_debt(session, user_id, target_date)
 
 
 def _compute_training_intensity(

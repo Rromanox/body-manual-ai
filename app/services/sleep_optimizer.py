@@ -273,6 +273,69 @@ def get_bedtime_deviation(
     }
 
 
+def calculate_sleep_debt(
+    session: Session,
+    user_id: int,
+    target_date: date,
+    lookback_days: int = 7,
+) -> dict[str, Any] | None:
+    """Cumulative sleep deficit over the past N days vs the user's own optimal duration.
+
+    optimal = avg sleep hours on nights where recovery >= 70 (last 90 days, min 5 nights)
+    Fallback: 30-day avg + 0.5h
+    Returns None when there's not enough data to establish an optimal.
+    """
+    from datetime import timedelta
+
+    cutoff_90 = target_date - timedelta(days=90)
+    good_nights = session.scalars(
+        select(DailyMetric).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= cutoff_90,
+            DailyMetric.date <= target_date,
+            DailyMetric.recovery_score >= 70,
+            DailyMetric.sleep_hours.is_not(None),
+        )
+    ).all()
+
+    if len(good_nights) >= 5:
+        optimal = sum(r.sleep_hours for r in good_nights) / len(good_nights)
+    else:
+        from sqlalchemy import func as sqlfunc
+        cutoff_30 = target_date - timedelta(days=30)
+        avg_val = session.scalar(
+            select(sqlfunc.avg(DailyMetric.sleep_hours)).where(
+                DailyMetric.user_id == user_id,
+                DailyMetric.date >= cutoff_30,
+                DailyMetric.date <= target_date,
+                DailyMetric.sleep_hours.is_not(None),
+            )
+        )
+        if avg_val is None:
+            return None
+        optimal = float(avg_val) + 0.5  # slightly above average as conservative target
+
+    cutoff_7 = target_date - timedelta(days=lookback_days)
+    recent = session.scalars(
+        select(DailyMetric).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= cutoff_7,
+            DailyMetric.date <= target_date,
+            DailyMetric.sleep_hours.is_not(None),
+        )
+    ).all()
+
+    if not recent:
+        return None
+
+    weekly_deficit = sum(max(0.0, optimal - r.sleep_hours) for r in recent)
+    return {
+        "optimal_hours_per_night": round(optimal, 1),
+        "weekly_deficit_hours": round(weekly_deficit, 1),
+        "days_analyzed": len(recent),
+    }
+
+
 def build_sleep_insights(
     session: Session,
     user_id: int,
@@ -280,7 +343,8 @@ def build_sleep_insights(
     """Full sleep insight payload for Q&A context.
 
     Includes bedtime profile, optimal window, pre-sleep factor impact,
-    and strain-adjusted advice. Returns None when there's not enough data yet.
+    strain-adjusted advice, and sleep debt. Returns None when there's not
+    enough data yet.
     """
     profile = get_bedtime_recovery_profile(session, user_id)
     if not profile:
@@ -289,10 +353,14 @@ def build_sleep_insights(
     optimal = max(profile, key=lambda b: b["avg_recovery"])
     factors = get_pre_sleep_factor_impact(session, user_id)
     strain_advice = get_strain_sleep_advice(session, user_id)
+    sleep_debt = calculate_sleep_debt(session, user_id, date.today())
 
-    return {
+    result: dict[str, Any] = {
         "bedtime_profile": profile,
         "optimal_bedtime": optimal,
         "pre_sleep_factors": factors,
         "strain_advice": strain_advice,
     }
+    if sleep_debt:
+        result["sleep_debt"] = sleep_debt
+    return result
