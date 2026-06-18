@@ -72,6 +72,8 @@ Special cases:
 
 Sleep debt — `sleep_debt` appears when the past 7 nights add up to a meaningful deficit vs the user's own optimal sleep duration (only shown when deficit >= 1h). Fields: `optimal_hours_per_night`, `weekly_deficit_hours`, `days_analyzed`. Mention it when present: "you're carrying about X hours of sleep debt from this week" — keep it informational, not alarming. If recovery is also low, connect the two.
 
+Wake consistency — `wake_consistency` only appears when the user's wake times are notably irregular (std dev > 40 min). Fields: `avg_wake_time`, `std_deviation_minutes`, `consistency` ("somewhat_inconsistent" or "inconsistent"), `nights_analyzed`. If present, mention it concisely: "your wake times have been all over the place this week" or similar — irregular wake times are a meaningful sleep quality signal worth naming.
+
 Training intensity — the payload includes a `training_intensity` field pre-computed from today's recovery and yesterday's strain: "push", "moderate", or "easy". Always close the morning message with one short sentence based on this:
 - "push": e.g. "Good day to push." / "Go hard today." / "Green light for a hard session."
 - "moderate": e.g. "Keep it moderate today." / "Train, but don't max out." / "Stay in the moderate zone."

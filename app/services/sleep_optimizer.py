@@ -273,6 +273,68 @@ def get_bedtime_deviation(
     }
 
 
+def get_wake_time_analysis(
+    session: Session,
+    user_id: int,
+    lookback_days: int = 21,
+) -> dict[str, Any] | None:
+    """Analyze wake time consistency over the last N days.
+
+    Uses sleep_end_local (HH:MM) to compute average wake time and std deviation.
+    Only considers wake times between 4am and 2pm (sane morning range).
+    Returns None when fewer than 5 data points.
+    """
+    import statistics
+    from datetime import timedelta
+
+    cutoff = date.today() - timedelta(days=lookback_days)
+    rows = session.scalars(
+        select(DailyMetric).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= cutoff,
+            DailyMetric.sleep_end_local.is_not(None),
+        )
+    ).all()
+
+    if len(rows) < 5:
+        return None
+
+    wake_minutes: list[float] = []
+    for r in rows:
+        try:
+            h, m = int(r.sleep_end_local[:2]), int(r.sleep_end_local[3:5])
+            mins = h * 60.0 + m
+            if 240 <= mins <= 840:  # 4am–2pm
+                wake_minutes.append(mins)
+        except (ValueError, IndexError):
+            continue
+
+    if len(wake_minutes) < 5:
+        return None
+
+    avg_mins = sum(wake_minutes) / len(wake_minutes)
+    std_mins = statistics.stdev(wake_minutes) if len(wake_minutes) > 1 else 0.0
+
+    avg_h = int(avg_mins // 60)
+    avg_m = int(avg_mins % 60)
+
+    if std_mins <= 20:
+        consistency = "very_consistent"
+    elif std_mins <= 40:
+        consistency = "consistent"
+    elif std_mins <= 60:
+        consistency = "somewhat_inconsistent"
+    else:
+        consistency = "inconsistent"
+
+    return {
+        "avg_wake_time": f"{avg_h:02d}:{avg_m:02d}",
+        "std_deviation_minutes": round(std_mins),
+        "consistency": consistency,
+        "nights_analyzed": len(wake_minutes),
+    }
+
+
 def calculate_sleep_debt(
     session: Session,
     user_id: int,
@@ -354,6 +416,7 @@ def build_sleep_insights(
     factors = get_pre_sleep_factor_impact(session, user_id)
     strain_advice = get_strain_sleep_advice(session, user_id)
     sleep_debt = calculate_sleep_debt(session, user_id, date.today())
+    wake_analysis = get_wake_time_analysis(session, user_id)
 
     result: dict[str, Any] = {
         "bedtime_profile": profile,
@@ -363,4 +426,6 @@ def build_sleep_insights(
     }
     if sleep_debt:
         result["sleep_debt"] = sleep_debt
+    if wake_analysis:
+        result["wake_consistency"] = wake_analysis
     return result

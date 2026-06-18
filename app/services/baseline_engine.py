@@ -85,6 +85,7 @@ class DailySnapshot:
     bedtime_deviation: dict | None = None   # last night's bedtime vs optimal window
     training_intensity: str | None = None   # "push" | "moderate" | "easy" — pre-computed from recovery + strain
     sleep_debt: dict | None = None          # weekly sleep deficit vs user's own optimal
+    wake_consistency: dict | None = None   # avg wake time + std deviation over last 21 days
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -129,7 +130,17 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         bedtime_deviation=_get_bedtime_deviation(session, user_id, target_date),
         training_intensity=_compute_training_intensity(recovery.today, yesterday_strain_label),
         sleep_debt=_get_sleep_debt(session, user_id, target_date),
+        wake_consistency=_get_wake_consistency(session, user_id),
     )
+
+
+def _get_wake_consistency(session: Session, user_id: int) -> dict | None:
+    from app.services.sleep_optimizer import get_wake_time_analysis
+    result = get_wake_time_analysis(session, user_id)
+    # Only surface when there's a problem worth flagging
+    if result and result.get("consistency") in ("somewhat_inconsistent", "inconsistent"):
+        return result
+    return None
 
 
 def _get_sleep_debt(session: Session, user_id: int, target_date: date) -> dict | None:
