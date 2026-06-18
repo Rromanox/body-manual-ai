@@ -191,11 +191,13 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         gap_fill = should_gap_fill(session, user.id, target_date, snapshot)
         from app.services.commitment_engine import get_active_commitments
         commitments = get_active_commitments(session, user.id, target_date)
+        _notes = user.coach_notes if isinstance(user.coach_notes, dict) else {}
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
             previous_message=previous_message, closed_loops=closed_loops,
             gap_fill_question=gap_fill, commitments=commitments or None,
+            coach_notes=_notes or None,
         )
 
         try:
@@ -208,7 +210,8 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-        fresh_triggers = filter_fresh_triggers(session, user.id, target_date, snapshot.safety_triggers)
+        coach_notes = user.coach_notes if isinstance(user.coach_notes, dict) else {}
+        fresh_triggers = filter_fresh_triggers(session, user.id, target_date, snapshot.safety_triggers, coach_notes=coach_notes)
         caution = safety_message(fresh_triggers)
         if caution:
             message_text = f"{message_text}\n\n{caution}"

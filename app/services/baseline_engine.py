@@ -57,6 +57,8 @@ class WeightTrend:
     overnight_change_lbs: float | None  # positive = gained, negative = lost
     weekly_trend_lbs: float | None      # positive = gaining per week, negative = losing
     flag: str | None                    # "spike_likely_water" | "declining" | "gaining"
+    current_weight_lbs: float | None = None   # most recent reading
+    projected_2w_lbs: float | None = None     # current + (weekly_trend * 2)
 
 
 @dataclass
@@ -73,12 +75,13 @@ class DailySnapshot:
     data_maturity: str
     safety_triggers: list[str]
     weight_trend: WeightTrend | None = None
-    # Yesterday's actual morning numbers, for day-over-day continuity ("you were
-    # wrecked yesterday, you're back today"). None when there's no row for yesterday.
+    # Yesterday's actual morning numbers, for day-over-day continuity
     yesterday_recovery: float | None = None
     yesterday_sleep_hours: float | None = None
     yesterday_resting_hr: float | None = None
     yesterday_hrv: float | None = None
+    tag_streaks: list[dict] | None = None   # tags logged N days in a row (N>=2)
+    creatine_streak: int = 0                # consecutive days creatine was taken
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:
@@ -117,6 +120,8 @@ def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> D
         yesterday_sleep_hours=yesterday_row.sleep_hours if yesterday_row else None,
         yesterday_resting_hr=yesterday_row.resting_heart_rate if yesterday_row else None,
         yesterday_hrv=yesterday_row.hrv_ms if yesterday_row else None,
+        tag_streaks=_get_tag_streaks(session, user_id, target_date) or None,
+        creatine_streak=_get_supplement_streak(session, user_id, target_date),
     )
 
 
@@ -284,10 +289,23 @@ def _build_weight_trend(session: Session, user_id: int, target_date: date) -> We
 
     if overnight_change_lbs is None and weekly_trend_lbs is None:
         return None
+
+    current_weight_lbs: float | None = None
+    if rows:
+        latest = next((r for r in rows if r.weight is not None), None)
+        if latest:
+            current_weight_lbs = round(latest.weight * KG_TO_LBS, 1)
+
+    projected_2w_lbs: float | None = None
+    if current_weight_lbs is not None and weekly_trend_lbs is not None:
+        projected_2w_lbs = round(current_weight_lbs + (weekly_trend_lbs * 2), 1)
+
     return WeightTrend(
         overnight_change_lbs=overnight_change_lbs,
         weekly_trend_lbs=weekly_trend_lbs,
         flag=flag,
+        current_weight_lbs=current_weight_lbs,
+        projected_2w_lbs=projected_2w_lbs,
     )
 
 
@@ -332,6 +350,79 @@ def _consecutive_days(by_date: dict, target_date: date, predicate) -> int:
             return streak
         streak += 1
         day -= timedelta(days=1)
+
+
+def _get_tag_streaks(session: Session, user_id: int, target_date: date, min_streak: int = 2) -> list[dict]:
+    """Return tags logged on consecutive days ending yesterday, longest streak first."""
+    from app.models.journal_entry import JournalEntry
+
+    yesterday = target_date - timedelta(days=1)
+    cutoff = target_date - timedelta(days=10)
+    entries = session.scalars(
+        select(JournalEntry).where(
+            JournalEntry.user_id == user_id,
+            JournalEntry.date >= cutoff,
+            JournalEntry.date <= yesterday,
+        )
+    ).all()
+    by_date: dict[date, set[str]] = {e.date: set(e.tags or []) for e in entries}
+
+    if yesterday not in by_date:
+        return []
+
+    streaks = []
+    for tag in by_date[yesterday]:
+        count = 0
+        day = yesterday
+        while day in by_date and tag in by_date[day]:
+            count += 1
+            day -= timedelta(days=1)
+        if count >= min_streak:
+            streaks.append({"tag": tag, "days": count})
+
+    streaks.sort(key=lambda x: x["days"], reverse=True)
+    return streaks
+
+
+def _get_supplement_streak(session: Session, user_id: int, target_date: date, name: str = "creatine") -> int:
+    """Count consecutive days a supplement was taken, up to and including yesterday."""
+    from app.models.supplement_log import SupplementLog
+
+    yesterday = target_date - timedelta(days=1)
+    cutoff = target_date - timedelta(days=60)
+    rows = session.scalars(
+        select(SupplementLog).where(
+            SupplementLog.user_id == user_id,
+            SupplementLog.name == name,
+            SupplementLog.date >= cutoff,
+            SupplementLog.date <= yesterday,
+        )
+    ).all()
+    by_date: dict[date, bool] = {r.date: r.taken for r in rows}
+    streak = 0
+    day = yesterday
+    while by_date.get(day):
+        streak += 1
+        day -= timedelta(days=1)
+    return streak
+
+
+_INTENTIONAL_LOSS_KEYWORDS = frozenset({
+    "peptide", "semaglutide", "ozempic", "wegovy", "mounjaro", "tirzepatide",
+    "glp", "cut", "cutting", "intentional", "deficit", "dieting",
+})
+
+
+def _is_intentional_weight_loss(coach_notes: dict) -> bool:
+    """True if coach_notes suggests the user is intentionally losing weight."""
+    for val in coach_notes.values():
+        if isinstance(val, list):
+            for item in val:
+                if any(kw in str(item).lower() for kw in _INTENTIONAL_LOSS_KEYWORDS):
+                    return True
+        elif any(kw in str(val).lower() for kw in _INTENTIONAL_LOSS_KEYWORDS):
+            return True
+    return False
 
 
 def get_previous_daily_message(session: Session, user_id: int, before_date: date) -> str | None:
@@ -639,16 +730,20 @@ def filter_fresh_triggers(
     user_id: int,
     target_date: date,
     triggers: list[str],
+    coach_notes: dict | None = None,
 ) -> list[str]:
     """Return only triggers not already shown in recent daily messages.
 
-    Prevents the same safety warning from firing every single day once
-    a threshold is crossed. The user sees it once, then silence for
-    COOLDOWN days before it can resurface.
+    Also permanently suppresses weight_loss_rapid when coach_notes indicates
+    the user is intentionally losing weight (peptides, cutting, etc.) — they
+    already know why and the warning adds no value.
     """
     if not triggers:
         return []
     from app.models.coach_message import CoachMessage
+
+    # Suppress intentional-loss warning permanently
+    intentional = coach_notes and _is_intentional_weight_loss(coach_notes)
 
     cutoff = target_date - timedelta(days=_SAFETY_WARNING_COOLDOWN_DAYS)
     recent = session.scalars(
@@ -665,8 +760,14 @@ def filter_fresh_triggers(
         if not msg.ai_response:
             continue
         for key, desc in SAFETY_TRIGGER_DESCRIPTIONS.items():
-            # Use a short unique substring of each description to detect presence
             if desc[:30] in msg.ai_response:
                 already_shown.add(key)
 
-    return [t for t in triggers if t not in already_shown]
+    result = []
+    for t in triggers:
+        if t in already_shown:
+            continue
+        if t == "weight_loss_rapid" and intentional:
+            continue
+        result.append(t)
+    return result

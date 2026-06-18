@@ -26,6 +26,7 @@ def build_daily_payload(
     closed_loops: list[dict[str, Any]] | None = None,
     gap_fill_question: bool = False,
     commitments: list[dict] | None = None,
+    coach_notes: dict | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -108,6 +109,10 @@ def build_daily_payload(
             weight_block["trend_per_week_lbs"] = wt.weekly_trend_lbs
         if wt.flag:
             weight_block["flag"] = wt.flag
+        if wt.current_weight_lbs is not None:
+            weight_block["current_lbs"] = wt.current_weight_lbs
+        if wt.projected_2w_lbs is not None:
+            weight_block["projected_in_2w_lbs"] = wt.projected_2w_lbs
         if weight_block:
             payload.setdefault("body_composition", {})["weight_trend"] = weight_block
 
@@ -117,6 +122,12 @@ def build_daily_payload(
         payload["gap_fill_question"] = True
     if commitments:
         payload["commitments"] = commitments[:2]
+    if snapshot.tag_streaks:
+        payload["tag_streaks"] = snapshot.tag_streaks
+    if snapshot.creatine_streak >= 1:
+        payload["creatine_streak_days"] = snapshot.creatine_streak
+    if coach_notes:
+        payload["about_you"] = coach_notes
 
     return payload
 
