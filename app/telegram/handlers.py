@@ -418,7 +418,10 @@ async def weekly(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         snapshot = build_weekly_snapshot(session, user.id, target_date)
-        payload = build_weekly_payload(user, snapshot, now=now)
+        weekly_memories = memory_retriever.for_weekly(session, user.id)
+        payload = build_weekly_payload(
+            user, snapshot, now=now, structured_memories=weekly_memories or None
+        )
 
         question = "How did this week feel overall — anything that stood out, good or bad?"
         session.add(CoachMessage(
@@ -645,7 +648,10 @@ async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         now = get_user_now(user)
         target_date = now.date()
         snapshot = build_weekly_snapshot(session, user.id, target_date)
-        payload = build_weekly_payload(user, snapshot, now=now)
+        focus_memories = memory_retriever.for_focus(session, user.id)
+        payload = build_weekly_payload(
+            user, snapshot, now=now, structured_memories=focus_memories or None
+        )
 
     try:
         text = await generate_focus_response(payload, user_id=user.id)

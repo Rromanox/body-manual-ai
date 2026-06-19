@@ -180,7 +180,10 @@ def build_daily_payload(
 
 
 def build_weekly_payload(
-    user: User, snapshot: WeeklySnapshot, now: datetime | None = None
+    user: User,
+    snapshot: WeeklySnapshot,
+    now: datetime | None = None,
+    structured_memories: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -208,6 +211,9 @@ def build_weekly_payload(
         payload["avg_strain_7d"] = _round1(snapshot.avg_strain_7d)
     if snapshot.tag_patterns:
         payload["behavior_patterns"] = snapshot.tag_patterns
+    # Phase 2B: high-confidence memories for weekly / focus framing.
+    if structured_memories:
+        payload["memory_context"] = structured_memories
     return payload
 
 

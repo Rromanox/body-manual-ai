@@ -857,6 +857,7 @@ class QAContext:
     goal_weight_lbs: float | None = None  # user's target weight in lbs
     hrv_long_trend: dict | None = None    # 30d HRV avg now vs 60-90d ago
     workout_effect: dict | None = None   # recovery the day after workout vs rest
+    weight_velocity: dict | None = None  # weight change rate now vs prior 4 weeks
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:

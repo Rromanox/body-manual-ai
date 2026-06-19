@@ -72,7 +72,11 @@ async def _send_for_user(user_id: int) -> None:
             return
 
         snapshot = build_weekly_snapshot(session, user.id, target_date)
-        payload = build_weekly_payload(user, snapshot, now=now)
+        from app.services import memory_retriever
+        weekly_memories = memory_retriever.for_weekly(session, user.id)
+        payload = build_weekly_payload(
+            user, snapshot, now=now, structured_memories=weekly_memories or None
+        )
 
         # Two-turn flow: send the question first, store the pre-built payload.
         # When the user replies, plain_text() detects the pending weekly_question
