@@ -206,12 +206,15 @@ async def _do_send_for_user(user_id: int) -> None:
         from app.services.commitment_engine import get_active_commitments
         commitments = get_active_commitments(session, user.id, target_date)
         _notes = user.coach_notes if isinstance(user.coach_notes, dict) else {}
+        from app.services import memory_retriever
+        structured_memories = memory_retriever.for_morning(session, user.id)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
             previous_message=previous_message, closed_loops=closed_loops,
             gap_fill_question=gap_fill, commitments=commitments or None,
             coach_notes=_notes or None,
+            structured_memories=structured_memories or None,
         )
 
         try:

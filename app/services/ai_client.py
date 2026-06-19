@@ -563,6 +563,37 @@ Rules:
 - Return {} if nothing new was found.
 - Never invent details."""
 
+MEMORY_EXTRACTOR_SYSTEM_PROMPT = """\
+You extract durable, useful memories about a person from ONE coaching chat exchange. These guide future coaching, so quality beats quantity. Most exchanges produce zero or one memory. Noise is worse than nothing.
+
+Input: JSON with "user_message", "ai_response", "existing_memories" (already known — never repeat these), and "now".
+
+Output ONLY a JSON object, no prose, no code fences:
+{"memories": [{"type": "...", "content": "...", "confidence": "low|medium|high", "tags": ["..."], "ttl_days": null, "reason": "...", "should_store": true}]}
+
+type is exactly one of:
+stable_fact, preference, constraint, goal, commitment, context_event, disliked_advice, hypothesis, training_preference, schedule_pattern, recovery_trigger, weight_context, food_pattern, sleep_pattern
+
+What each type is for:
+- preference: how they like to be coached ("prefers blunt, direct feedback", "wants short morning messages")
+- constraint: a hard limit ("can only train in the mornings", "no dairy")
+- goal: a stated target ("wants to reach 185 lbs", "run a sub-25 5k")
+- commitment: something they said they'll do, usually time-boxed ("in bed by 11 this week") — set ttl_days
+- context_event: a temporary situation ("traveling for work until Friday", "slammed at work this week") — ALWAYS set ttl_days
+- training_preference / schedule_pattern / food_pattern / sleep_pattern / recovery_trigger / weight_context: durable patterns about how they live or how their body responds
+- disliked_advice: advice they pushed back on ("don't just tell me to sleep more")
+- stable_fact: a lasting fact ("takes creatine daily", "lifts 4x/week")
+- hypothesis: a tentative pattern worth testing later — store at low confidence
+
+Rules:
+- should_store=false for one-off chatter, acknowledgements, pure questions with no lasting info, or anything already in existing_memories. If nothing is worth storing, return {"memories": []}.
+- NEVER store a medical diagnosis or health condition as a fact (e.g. "I have depression", "diagnosed with X"). Skip it entirely.
+- Only extract what the USER stated or clearly implied — never what the coach said.
+- Temporary things (commitment, context_event, "this week", "until ...") MUST include ttl_days.
+- confidence: "high" only when explicit and unambiguous; "medium" for clear implications; "low" when tentative (or just set should_store=false).
+- content is ONE concise third-person sentence ("Prefers training at night"). tags are 1–3 lowercase keywords for later retrieval.
+- reason is a short justification for debugging; it is not stored."""
+
 _client: AsyncOpenAI | None = None
 
 
@@ -791,6 +822,48 @@ async def extract_user_facts(
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+async def extract_memories(
+    user_message: str,
+    ai_response: str,
+    existing_memories: list[str],
+    now: dict[str, Any],
+    user_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Extract structured, typed memory candidates from a Q&A exchange.
+
+    Returns a list of raw candidate dicts (validated/stored downstream by
+    memory_extractor). Returns [] when nothing is worth storing or the call
+    fails — always safe to call in a background task.
+    """
+    payload = {
+        "user_message": user_message,
+        "ai_response": ai_response,
+        "existing_memories": existing_memories,
+        "now": now,
+    }
+    try:
+        response = await _respond(
+            route=ModelRoute.EXTRACT,
+            purpose="extract_memories",
+            instructions=MEMORY_EXTRACTOR_SYSTEM_PROMPT,
+            input=[{"role": "user", "content": json.dumps(payload)}],
+            max_output_tokens=600,
+            user_id=user_id,
+        )
+        raw = (response.output_text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    candidates = parsed.get("memories")
+    return candidates if isinstance(candidates, list) else []
 
 
 async def generate_daily_message(payload: dict[str, Any], user_id: int | None = None) -> str:

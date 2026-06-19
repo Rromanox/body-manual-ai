@@ -58,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("weekly", "This week's summary"),
         # Review & track
         BotCommand("manual", "Your personal body manual & patterns"),
+        BotCommand("memory", "What I've learned about you"),
         BotCommand("history", "Last 7 daily messages"),
         BotCommand("chatlog", "Full chat history for review"),
         BotCommand("experiment", "Start or check an experiment"),

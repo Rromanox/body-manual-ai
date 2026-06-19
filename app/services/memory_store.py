@@ -161,6 +161,15 @@ def _find_duplicate(
     return None
 
 
+def find_active_duplicate(
+    session: Session, user_id: int, memory_type: str, content: str
+) -> UserMemory | None:
+    """Public dedup lookup: the active same-type memory whose content normalizes
+    equal to ``content``, or None. Lets callers tell "stored" from "merged"
+    before calling add_memory(dedupe=True)."""
+    return _find_duplicate(session, user_id, memory_type, content)
+
+
 def get_memory(session: Session, memory_id: int) -> UserMemory | None:
     return session.get(UserMemory, memory_id)
 

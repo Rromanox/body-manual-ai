@@ -33,6 +33,7 @@ from app.services.baseline_engine import (
     should_gap_fill,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
+from app.services import memory_extractor, memory_retriever, memory_store
 from app.services.chat_logger import log_outgoing
 from app.services.event_engine import EVENT_TYPES, apply_event_to_tags, enrich_closed_loops_with_meal_gap
 from app.services.observation_engine import POSITIVE_TAGS, build_closed_loops, recalculate_observations
@@ -192,12 +193,14 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from app.services.commitment_engine import get_active_commitments
         commitments = get_active_commitments(session, user.id, target_date)
         _notes = user.coach_notes if isinstance(user.coach_notes, dict) else {}
+        structured_memories = memory_retriever.for_morning(session, user.id)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
             previous_message=previous_message, closed_loops=closed_loops,
             gap_fill_question=gap_fill, commitments=commitments or None,
             coach_notes=_notes or None,
+            structured_memories=structured_memories or None,
         )
 
         try:
@@ -509,6 +512,54 @@ async def goalweight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"Target weight set to {new_weight} lbs. "
         "I'll track your progress in your morning messages and when you ask about weight."
     )
+
+
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inspect/correct structured memory (Memory 2.0 Phase 2A).
+
+    /memory                 — active memories grouped by type
+    /memory recent          — most recently learned memories
+    /memory delete <id>     — archive a memory
+    /memory confirm <id>    — confirm a memory (raises it to high confidence)
+    """
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+
+        if sub in ("delete", "confirm"):
+            if len(args) < 2 or not args[1].isdigit():
+                await update.message.reply_text(f"Usage: /memory {sub} <id>")
+                return
+            mem_id = int(args[1])
+            mem = memory_store.get_memory(session, mem_id)
+            if mem is None or mem.user_id != user.id:
+                await update.message.reply_text(f"No memory with id {mem_id}.")
+                return
+            if sub == "delete":
+                memory_store.archive(session, mem_id)
+                await update.message.reply_text(f"Deleted memory [{mem_id}].")
+            else:
+                memory_store.confirm(session, mem_id)
+                await update.message.reply_text(f"Confirmed memory [{mem_id}] ✓")
+            return
+
+        if sub == "recent":
+            rows = memory_store.get_active(session, user.id, limit=15)
+            text = memory_retriever.render_memory_list(rows, "Recently learned")
+        else:
+            rows = memory_store.get_active(session, user.id)
+            text = memory_retriever.render_memory_list(rows, "What I remember about you")
+
+    # No parse_mode — memory content is AI-extracted and may contain Markdown chars.
+    await update.message.reply_text(text)
 
 
 async def timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1029,7 +1080,11 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         now = get_user_now(user)
         target_date = now.date()
         qa_ctx = build_qa_context(session, user.id, target_date, user=user)
-        payload = build_qa_payload(question, qa_ctx, now=now_block(user, now))
+        relevant_memories = memory_retriever.for_qa(session, user.id, question)
+        payload = build_qa_payload(
+            question, qa_ctx, now=now_block(user, now),
+            structured_memories=relevant_memories or None,
+        )
         user_id = user.id
 
         # Last 10 Q&A exchanges as conversation history so the AI remembers the thread
@@ -1083,8 +1138,23 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(response_text)
     log_outgoing(telegram_id, response_text, "q_and_a")
 
-    # Background: extract persistent facts from this exchange and merge into coach_notes
+    # Background: extract persistent facts from this exchange and merge into coach_notes.
+    # Legacy coach_notes extraction (about_you) runs alongside the new structured
+    # memory extraction (user_memories) during Phase 2A — neither blocks the reply.
     asyncio.create_task(_update_coach_notes(user_id, question, response_text))
+    asyncio.create_task(_run_memory_extraction(user_id, question, response_text))
+
+
+async def _run_memory_extraction(user_id: int, user_message: str, ai_response: str) -> None:
+    """Background: extract typed structured memories into user_memories (Phase 2A).
+
+    Runs in parallel with _update_coach_notes. memory_extractor.run_for_exchange
+    is already crash-proof; this wrapper is belt-and-suspenders so a failure here
+    never affects the reply the user already received."""
+    try:
+        await memory_extractor.run_for_exchange(user_id, user_message, ai_response)
+    except Exception:
+        logger.exception("Structured memory extraction failed for user %s", user_id)
 
 
 async def _update_coach_notes(user_id: int, user_message: str, ai_response: str) -> None:
@@ -1134,6 +1204,7 @@ Just type it — "had pizza at 9pm", "3 drinks tonight", "stressful day", "going
 *Review*
 /weekly — this week vs your 30-day baseline (asks how the week felt first)
 /manual — your baselines, patterns, and what helps vs hurts
+/memory — what I've learned about you (/memory delete <id> to fix it)
 /history — last 7 daily messages
 /chatlog — full conversation history
 

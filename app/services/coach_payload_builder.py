@@ -27,6 +27,7 @@ def build_daily_payload(
     gap_fill_question: bool = False,
     commitments: list[dict] | None = None,
     coach_notes: dict | None = None,
+    structured_memories: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -170,6 +171,11 @@ def build_daily_payload(
             weight_goal["achieved"] = True
         payload["weight_goal"] = weight_goal
 
+    # Phase 2A: structured memory plumbed in alongside about_you (coach_notes).
+    # No prompt references it yet — activation is Phase 2B.
+    if structured_memories:
+        payload["memory_context"] = structured_memories
+
     return payload
 
 
@@ -206,7 +212,10 @@ def build_weekly_payload(
 
 
 def build_qa_payload(
-    question: str, context: QAContext, now: dict[str, Any] | None = None
+    question: str,
+    context: QAContext,
+    now: dict[str, Any] | None = None,
+    structured_memories: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     def _r(v: float | None) -> float | None:
         return round(v, 1) if v is not None else None
@@ -246,6 +255,10 @@ def build_qa_payload(
         payload["workout_effect"] = context.workout_effect
     if context.weight_velocity:
         payload["weight_velocity"] = context.weight_velocity
+    # Phase 2A: structured memory plumbed in alongside about_you. No prompt
+    # references it yet — activation is Phase 2B.
+    if structured_memories:
+        payload["memory_context"] = structured_memories
     return payload
 
 
