@@ -32,8 +32,16 @@ _DEFAULT_CHECKPOINT_OFFSET = 1
 
 # Backend backstop for the "no generic filler" rule (the prompt forbids it too).
 _GENERIC_RE = re.compile(
-    r"\b(stay hydrated|drink water|listen to your body|get some rest|rest up|"
-    r"take it easy|be well|feel better|let me know|stay safe)\b",
+    r"\b(stay hydrated|drink water|hydrate|listen to your body|get some rest|rest up|"
+    r"rest and recover|take it easy|be well|feel better|let me know|stay safe|"
+    r"prioritize sleep|prioritise sleep|get good sleep|take care)\b",
+    re.IGNORECASE,
+)
+
+# Observation/explanation-only openers — not actions, so not recommendations.
+_EXPLANATION_RE = re.compile(
+    r"^(your |you're |you are |this is |that's |that is |it's |it is |recovery is |"
+    r"hrv is |strain is |sleep is |i (see|notice|think))",
     re.IGNORECASE,
 )
 
@@ -61,10 +69,17 @@ def _evaluate_candidate(c: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
     text = str(c.get("recommendation_text") or "").strip()
     if not title or not text:
         return False, "empty_title_or_text", {}
-    # Generic filler with no measurable hook -> skip (backstop for the prompt).
+    # Questions aren't recommendations.
+    if title.endswith("?") or text.endswith("?"):
+        return False, "question", {}
     has_hook = bool(c.get("checkpoint_metric")) or bool(c.get("trigger_data"))
+    # Generic filler -> skip; in the text it's only filler when there's no
+    # measurable hook (e.g. "rest and recover" alone vs "rest, keep strain <8").
     if _GENERIC_RE.search(title) or (_GENERIC_RE.search(text) and not has_hook):
         return False, "generic_advice", {}
+    # Observation/explanation with no actionable hook -> skip ("your recovery is low").
+    if _EXPLANATION_RE.match(title) and not has_hook:
+        return False, "explanation_only", {}
 
     rec_type = str(c.get("recommendation_type") or "general").lower()
     if rec_type not in VALID_REC_TYPES:
@@ -101,9 +116,20 @@ def validate_and_store(
 ) -> dict[str, Any]:
     """Validate candidates and persist up to ``max_store`` new recommendations.
 
-    Deterministic — no AI, no network. Dedups same-day/same-type/same-title.
-    Returns a counts summary for logging.
+    Deterministic — no AI, no network. Idempotent on source_message_id, and
+    dedups on a signature (type + metric + target, or normalized title) so AI
+    title drift doesn't create duplicates. Returns a counts summary.
     """
+    # Idempotency: if we already extracted from this exact message, do nothing.
+    if source_message_id is not None and recommendation_ledger.exists_for_source_message(
+        session, user_id, source_message_id
+    ):
+        logger.info(
+            "recommendation_extract user=%s action=skipped reason=already_processed source_message_id=%s",
+            user_id, source_message_id,
+        )
+        return {"stored": 0, "merged": 0, "skipped": 0, "already_processed": True}
+
     stored = merged = skipped = 0
     for c in candidates or []:
         if stored >= max_store:
@@ -117,8 +143,12 @@ def validate_and_store(
             continue
 
         checkpoint_date = _checkpoint_date(fields["checkpoint_metric"], source_type, local_date)
+        signature = recommendation_ledger.dedup_signature(
+            fields["recommendation_type"], fields["checkpoint_metric"],
+            fields["trigger_data"], fields["title"], fields["recommendation_text"],
+        )
         was_dup = recommendation_ledger.find_duplicate(
-            session, user_id, local_date, fields["recommendation_type"], fields["title"]
+            session, user_id, local_date, signature
         ) is not None
         recommendation_ledger.create_recommendation(
             session, user_id,
@@ -162,6 +192,15 @@ async def run_for_message(
             user = session.get(User, user_id)
             if user is None:
                 return {}
+            # Idempotency before spending an API call: skip if already processed.
+            if source_message_id is not None and recommendation_ledger.exists_for_source_message(
+                session, user_id, source_message_id
+            ):
+                logger.info(
+                    "recommendation_extract user=%s action=skipped reason=already_processed source_message_id=%s",
+                    user_id, source_message_id,
+                )
+                return {"stored": 0, "merged": 0, "skipped": 0, "already_processed": True}
             now = get_user_now(user)
             now_b = now_block(user, now)
             local_date = now.date()

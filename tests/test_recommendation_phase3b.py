@@ -121,8 +121,10 @@ def test_empty_title_or_text_skipped(mem_session):
 
 def test_max_three_per_message(mem_session):
     make_user(mem_session)
+    # Distinct actions (no shared target) so signature dedup keeps them separate.
     cands = [
-        _candidate(title=f"Action {i}", recommendation_text=f"Do action {i}.", recommendation_type="behavior")
+        _candidate(title=f"Action {i}", recommendation_text=f"Do action {i}.",
+                   recommendation_type="behavior", checkpoint_metric=None, trigger_data={})
         for i in range(5)
     ]
     summary = rx.validate_and_store(mem_session, 1, cands, source_type="daily", local_date=TODAY)

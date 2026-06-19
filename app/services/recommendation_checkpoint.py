@@ -155,19 +155,37 @@ def evaluate_due(
     due = recommendation_ledger.get_due_checkpoints(session, user_id, as_of_date)
     checked = inconclusive = 0
     for rec in due:
+        # If the user told us they didn't follow it, don't imply it worked/failed.
+        if rec.followed_status == "not_followed":
+            recommendation_ledger.mark_inconclusive(
+                session, rec.id,
+                outcome_summary="Could not evaluate the recommendation because it appears it was not followed.",
+                commit=False,
+            )
+            inconclusive += 1
+            logger.info(
+                "recommendation checkpoint user=%s rec=%s outcome=inconclusive reason=not_followed",
+                user_id, rec.id,
+            )
+            continue
+
         outcome, followed, summary = _evaluate_one(rec, lookup)
+        if rec.followed_status == "followed":
+            summary = f"{summary} (You marked this as followed.)"
+        # A manually set follow-through wins — don't let auto-inference overwrite it.
+        eff_followed = None if rec.followed_status != "unknown" else followed
         if outcome == "inconclusive":
             recommendation_ledger.mark_inconclusive(session, rec.id, outcome_summary=summary, commit=False)
             inconclusive += 1
         else:
             recommendation_ledger.mark_checked(
                 session, rec.id, outcome_status=outcome,
-                outcome_summary=summary, followed_status=followed, commit=False,
+                outcome_summary=summary, followed_status=eff_followed, commit=False,
             )
             checked += 1
         logger.info(
             "recommendation checkpoint user=%s rec=%s metric=%s outcome=%s followed=%s",
-            user_id, rec.id, rec.checkpoint_metric, outcome, followed,
+            user_id, rec.id, rec.checkpoint_metric, outcome, eff_followed,
         )
     if commit and due:
         session.commit()

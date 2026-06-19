@@ -584,12 +584,24 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(text)
 
 
-async def recs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """View logged recommendations (Recommendation Ledger Phase 3B).
+_RECS_FOLLOW_ACTIONS = {
+    "followed": "followed",
+    "notfollowed": "not_followed",
+    "partial": "partial",
+}
 
-    /recs           recent recommendations (any status)
-    /recs pending   still-pending recommendations / checkpoints
-    /recs checked   recently checked outcomes
+
+async def recs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View and control logged recommendations (Recommendation Ledger Phase 3C).
+
+    /recs                  recent recommendations (any status)
+    /recs recent           same as /recs
+    /recs pending          still-pending recommendations / checkpoints
+    /recs checked          recently checked outcomes
+    /recs cancel <id>      cancel a recommendation
+    /recs followed <id>    mark you followed it
+    /recs notfollowed <id> mark you didn't follow it
+    /recs partial <id>     mark you partly followed it
     """
     if update.message is None or update.effective_user is None:
         return
@@ -603,6 +615,27 @@ async def recs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text("Run /start first so I can set you up.")
             return
 
+        # --- control sub-commands: /recs <action> <id> (owner-scoped) ---
+        if sub == "cancel" or sub in _RECS_FOLLOW_ACTIONS:
+            if len(args) < 2 or not args[1].isdigit():
+                await update.message.reply_text(f"Usage: /recs {sub} <id>")
+                return
+            rec_id = int(args[1])
+            rec = recommendation_ledger.get_recommendation(session, rec_id)
+            if rec is None or rec.user_id != user.id:
+                await update.message.reply_text(f"No recommendation with id {rec_id}.")
+                return
+            if sub == "cancel":
+                recommendation_ledger.cancel(session, rec_id)
+                await update.message.reply_text(f"Cancelled recommendation [{rec_id}].")
+            else:
+                recommendation_ledger.set_followed_status(session, rec_id, _RECS_FOLLOW_ACTIONS[sub])
+                await update.message.reply_text(
+                    f"Marked recommendation [{rec_id}] as {_RECS_FOLLOW_ACTIONS[sub].replace('_', ' ')}."
+                )
+            return
+
+        # --- views ---
         if sub == "pending":
             rows = recommendation_ledger.get_pending(session, user.id, limit=20)
             header = "Pending recommendations"
@@ -612,7 +645,7 @@ async def recs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 if r.status in ("checked", "inconclusive")
             ][:20]
             header = "Recently checked"
-        else:
+        else:  # "" or "recent"
             rows = recommendation_ledger.get_recent(session, user.id, limit=20)
             header = "Recent recommendations"
         text = recommendation_ledger.render_recommendation_list(rows, header)

@@ -37,28 +37,69 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# trigger_data keys that carry a concrete numeric/target hook. When one is
+# present, dedup keys on the TARGET (not the prose), so AI title drift collapses:
+# "Keep strain under 10" / "Stay below 10 strain" / "Limit strain to under 10"
+# all share {type=training, metric=strain, strain_limit=10}.
+_TARGET_KEYS = ("strain_limit", "target_hours", "target_bedtime", "target", "target_lbs", "hrv_pct_below")
+
+
+def dedup_signature(
+    recommendation_type: str | None,
+    checkpoint_metric: str | None,
+    trigger_data: dict[str, Any] | None,
+    title: str,
+    text: str,
+) -> str:
+    """Deterministic dedup key for a recommendation (Phase 3C).
+
+    With a concrete target, two recommendations are "the same" when they share
+    type + checkpoint metric + target values — robust to title/wording drift.
+    Without a target, fall back to type + metric + normalized title so genuinely
+    different actions stay distinct.
+    """
+    rec_type = (recommendation_type or "").lower()
+    metric = (checkpoint_metric or "").lower()
+    td = trigger_data or {}
+    targets = {k: td[k] for k in _TARGET_KEYS if td.get(k) is not None}
+    if targets:
+        target_sig = ";".join(f"{k}={targets[k]}" for k in sorted(targets))
+        return f"{rec_type}|{metric}|{target_sig}"
+    return f"{rec_type}|{metric}|{_normalize(title)}"
+
+
 def find_duplicate(
     session: Session,
     user_id: int,
     local_date: date,
-    recommendation_type: str,
-    title: str,
+    signature: str,
 ) -> RecommendationLedger | None:
-    """A still-pending recommendation of the same type, same day, same (normalized)
-    title for this user — or None. Used to avoid logging the same advice twice."""
-    norm = _normalize(title)
+    """A still-pending recommendation for this user/day whose dedup signature
+    matches — or None. Used to avoid logging the same advice twice."""
     rows = session.scalars(
         select(RecommendationLedger).where(
             RecommendationLedger.user_id == user_id,
             RecommendationLedger.local_date == local_date,
-            RecommendationLedger.recommendation_type == recommendation_type,
             RecommendationLedger.status == "pending",
         )
     ).all()
     for r in rows:
-        if _normalize(r.title) == norm:
+        if dedup_signature(r.recommendation_type, r.checkpoint_metric, r.trigger_data, r.title, r.recommendation_text) == signature:
             return r
     return None
+
+
+def exists_for_source_message(session: Session, user_id: int, source_message_id: int) -> bool:
+    """Whether any recommendation was already extracted from this coach message.
+
+    Idempotency for retries/replays/background re-runs — once a message is
+    processed, we never extract from it again (regardless of those recs' status)."""
+    return session.scalar(
+        select(RecommendationLedger.id).where(
+            RecommendationLedger.user_id == user_id,
+            RecommendationLedger.source_message_id == source_message_id,
+        )
+    ) is not None
 
 
 def create_recommendation(
@@ -103,7 +144,8 @@ def create_recommendation(
     local_date = local_date or date.today()
 
     if dedupe:
-        existing = find_duplicate(session, user_id, local_date, recommendation_type, title)
+        signature = dedup_signature(recommendation_type, checkpoint_metric, trigger_data, title, recommendation_text)
+        existing = find_duplicate(session, user_id, local_date, signature)
         if existing is not None:
             logger.info(
                 "recommendation dedup user=%s date=%s type=%s title=%r -> existing id=%s",
@@ -244,6 +286,22 @@ def cancel(session: Session, rec_id: int, *, commit: bool = True) -> Recommendat
     return rec
 
 
+def set_followed_status(
+    session: Session, rec_id: int, followed_status: str, *, commit: bool = True
+) -> RecommendationLedger | None:
+    """User-supplied follow-through (Phase 3C /recs controls). Checkpoint
+    evaluation respects this — e.g. not_followed -> outcome isn't claimed."""
+    if followed_status not in VALID_FOLLOWED:
+        raise ValueError(f"Unknown followed_status: {followed_status!r}")
+    rec = session.get(RecommendationLedger, rec_id)
+    if rec is None:
+        return None
+    rec.followed_status = followed_status
+    if commit:
+        session.commit()
+    return rec
+
+
 def get_recent(
     session: Session,
     user_id: int,
@@ -273,11 +331,16 @@ def build_context(
 ) -> list[dict[str, Any]]:
     """Serialized recent recommendations (pending + recently checked) for payloads.
 
-    Capped and newest-first. Empty list when there's nothing — callers omit the
+    Capped, newest-first, excludes cancelled. Old checked items fall out via the
+    ``since_days`` window. Empty list when there's nothing — callers omit the
     payload key entirely in that case.
     """
     since = today - timedelta(days=since_days)
-    return [serialize(r) for r in get_recent(session, user_id, since=since, limit=limit)]
+    # Pull a little extra, then drop cancelled and cap — so cancelled rows don't
+    # eat into the limit.
+    rows = get_recent(session, user_id, since=since, limit=limit * 3)
+    kept = [r for r in rows if r.status != "cancelled"][:limit]
+    return [serialize(r) for r in kept]
 
 
 _STATUS_LABELS = {
@@ -289,21 +352,34 @@ _STATUS_LABELS = {
 
 
 def render_recommendation_list(recs: list[RecommendationLedger], header: str) -> str:
-    """Plain-text Telegram rendering for /recs. Pure function (no Markdown — text
-    is AI-derived and would break the parser)."""
+    """Plain-text Telegram rendering for /recs (Phase 3C). Pure function.
+
+    Pending rows show what will be checked; resolved rows show the outcome. No
+    Markdown — recommendation text is AI-derived and would break the parser."""
     if not recs:
         return f"{header}\n\nNothing yet — I'll log advice as I give it."
     lines = [header, ""]
     for r in recs:
-        suffix = ""
-        if r.status == "checked" and r.outcome_status not in (None, "unknown"):
-            suffix = f" — {r.outcome_status}"
-        elif r.status != "pending":
-            suffix = f" — {_STATUS_LABELS.get(r.status, r.status).lower()}"
-        lines.append(f"[{r.id}] ({r.local_date}) {r.title}{suffix}")
-        if r.status == "checked" and r.outcome_summary:
-            lines.append(f"    {r.outcome_summary}")
-    return "\n".join(lines)
+        if r.status == "pending":
+            lines.append(f"[{r.id}] {r.recommendation_type.title()} — {r.title}")
+            meta = []
+            if r.checkpoint_date:
+                meta.append(f"Checkpoint: {r.checkpoint_date}")
+            if r.checkpoint_metric:
+                meta.append(f"Metric: {r.checkpoint_metric}")
+            meta.append(f"Source: {r.source_type}")
+            meta.append(f"Confidence: {r.confidence}")
+            lines.append("    " + " · ".join(meta))
+        elif r.status in ("checked", "inconclusive"):
+            outcome = r.outcome_status if r.outcome_status not in (None, "unknown") else r.status
+            lines.append(f"[{r.id}] {r.title}")
+            lines.append(f"    Outcome: {outcome} · Followed: {r.followed_status}")
+            if r.outcome_summary:
+                lines.append(f"    {r.outcome_summary}")
+        else:  # cancelled
+            lines.append(f"[{r.id}] {r.title} — cancelled")
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def serialize(rec: RecommendationLedger) -> dict[str, Any]:
