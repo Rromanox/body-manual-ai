@@ -55,6 +55,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("today", handlers.today))
     application.add_handler(CommandHandler("checkin", handlers.checkin))
     application.add_handler(CommandHandler("creatine", handlers.creatine))
+    application.add_handler(CommandHandler("reta", handlers.reta_command))
     application.add_handler(CommandHandler("weekly", handlers.weekly))
     application.add_handler(CommandHandler("manual", handlers.manual))
     application.add_handler(CommandHandler("memory", handlers.memory_command))

@@ -13,11 +13,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
+from app.models.health_reminder import HealthReminder
 from app.models.recommendation import RecommendationLedger
 from app.models.user import User
 from app.models.user_memory import UserMemory
 
-_TABLES = [User.__table__, UserMemory.__table__, RecommendationLedger.__table__]
+_TABLES = [
+    User.__table__,
+    UserMemory.__table__,
+    RecommendationLedger.__table__,
+    HealthReminder.__table__,
+]
 
 
 @pytest.fixture

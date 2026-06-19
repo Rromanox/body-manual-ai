@@ -19,6 +19,7 @@ from alembic.config import Config as AlembicConfig
 
 from app.config import settings, validate_startup_settings
 from app.jobs.daily_message import run_daily_message
+from app.jobs.health_reminder_job import run_health_reminders
 from app.jobs.proactive_check import run_proactive_check
 from app.jobs.supplement_reminder import run_supplement_reminder
 from app.jobs.weekly_message import run_weekly_message
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("today", "Get your coach message for today"),
         BotCommand("checkin", "Log what happened yesterday"),
         BotCommand("creatine", "Log creatine taken today"),
+        BotCommand("reta", "Log/track your retatrutide shot reminder"),
         BotCommand("focus", "One action item for this week"),
         BotCommand("weekly", "This week's summary"),
         # Review & track
@@ -116,6 +118,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_proactive_check,
         CronTrigger(minute=0),
         id="proactive_check",
+        max_instances=3,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    # Recurring health reminders (e.g. retatrutide every N days). Hourly tick,
+    # per-user local clock; once-per-due-date via last_reminded_date.
+    scheduler.add_job(
+        run_health_reminders,
+        CronTrigger(minute=0),
+        id="health_reminders",
         max_instances=3,
         coalesce=True,
         misfire_grace_time=600,

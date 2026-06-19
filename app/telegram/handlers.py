@@ -34,6 +34,7 @@ from app.services.baseline_engine import (
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
 from app.services import (
+    health_reminder,
     memory_extractor,
     memory_retriever,
     memory_store,
@@ -655,6 +656,63 @@ async def recs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text)
 
 
+def _parse_interval_arg(parts: list[str]) -> int | None:
+    for p in parts:
+        if p.isdigit():
+            return int(p)
+    return None
+
+
+async def reta_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Retatrutide shot reminder (user-specified; not medical advice).
+
+    /reta                 log a shot today
+    /reta status          show last shot + next due date
+    /reta every 6 days    set the interval
+    /reta stop            stop reminders
+    /reta help            usage
+    """
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        uid = user.id
+        today = get_user_today(user)
+
+        if sub == "help":
+            reply = health_reminder.RETA_HELP
+        elif sub == "status":
+            reply = health_reminder.format_status(health_reminder.get(session, uid))
+        elif sub == "stop":
+            stopped = health_reminder.stop(session, uid) is not None
+            reply = health_reminder.format_stopped(stopped)
+        elif sub == "every":
+            n = _parse_interval_arg(args[1:])
+            if n is None:
+                reply = "Usage: /reta every 6 days"
+            else:
+                try:
+                    r = health_reminder.set_interval(session, uid, n)
+                    reply = health_reminder.format_set_interval(r)
+                except ValueError:
+                    reply = "Interval must be between 1 and 365 days (e.g. /reta every 6 days)."
+        elif sub == "":
+            r = health_reminder.log_completion(session, uid, today)
+            reply = health_reminder.format_logged(r, today=today)
+        else:
+            reply = health_reminder.RETA_HELP
+
+    await update.message.reply_text(reply)
+    log_outgoing(telegram_id, reply, "reta", user_id=uid)
+
+
 async def timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """View or set the user's IANA timezone. /timezone America/New_York"""
     if update.message is None or update.effective_user is None:
@@ -1156,6 +1214,29 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         log_outgoing(telegram_id, _wr_msg, "ai_weekly")
         return
 
+    # Retatrutide reminder via natural language: "I took my shot today",
+    # "took reta yesterday", "remind me every 6 days for reta".
+    with SessionLocal() as session:
+        _reta_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        _reta_uid = _reta_user.id if _reta_user else None
+        _reta_today = get_user_today(_reta_user) if _reta_user else None
+    if _reta_user is not None:
+        reta_intent = health_reminder.detect_reta_message(question, _reta_today)
+        if reta_intent is not None:
+            with SessionLocal() as session:
+                if reta_intent["action"] == "set_interval":
+                    try:
+                        r = health_reminder.set_interval(session, _reta_uid, reta_intent["interval_days"])
+                        reta_reply = health_reminder.format_set_interval(r)
+                    except ValueError:
+                        reta_reply = "Interval must be between 1 and 365 days."
+                else:  # log
+                    r = health_reminder.log_completion(session, _reta_uid, reta_intent["date"])
+                    reta_reply = health_reminder.format_logged(r, today=_reta_today)
+            await update.message.reply_text(reta_reply)
+            log_outgoing(telegram_id, reta_reply, "reta", user_id=_reta_uid)
+            return
+
     # Recommendation follow-through: "I skipped training", "stayed under 10", etc.
     # Only considered when there are recent pending recommendations to update.
     ft_pending: list = []
@@ -1358,6 +1439,7 @@ Just type it — "had pizza at 9pm", "3 drinks tonight", "stressful day", "going
 *Track*
 /experiment — start a self-test (e.g. "does creatine affect my recovery?")
 /creatine — log creatine and get reminders
+/reta — log your retatrutide shot; reminds you on the due date (/reta help)
 
 *Settings*
 /goal — general health / performance / weight loss
