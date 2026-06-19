@@ -259,9 +259,13 @@ def mark_inconclusive(
     rec_id: int,
     *,
     outcome_summary: str | None = None,
+    followed_status: str | None = None,
     commit: bool = True,
 ) -> RecommendationLedger | None:
-    """Resolve a recommendation we couldn't measure (e.g. missing data)."""
+    """Resolve a recommendation we couldn't measure (e.g. missing data, or it
+    wasn't followed). Optionally records an inferred follow-through."""
+    if followed_status is not None and followed_status not in VALID_FOLLOWED:
+        raise ValueError(f"Unknown followed_status: {followed_status!r}")
     rec = session.get(RecommendationLedger, rec_id)
     if rec is None:
         return None
@@ -269,6 +273,8 @@ def mark_inconclusive(
     rec.outcome_status = "inconclusive"
     if outcome_summary is not None:
         rec.outcome_summary = outcome_summary
+    if followed_status is not None:
+        rec.followed_status = followed_status
     rec.checked_at = _now()
     if commit:
         session.commit()

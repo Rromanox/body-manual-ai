@@ -52,6 +52,63 @@ def _normalize_metric(value: Any) -> str | None:
     return _METRIC_ALIASES.get(str(value).lower())  # canonical key, or None if unknown
 
 
+# Backend extraction of structured targets/flags so WHOOP follow-through inference
+# works even when the model didn't populate trigger_data perfectly (Phase 3D §5).
+_STRAIN_LIMIT_RE = re.compile(r"strain\s*(?:under|below|less than|<|<=)\s*(\d+(?:\.\d+)?)|(?:under|below|<|<=)\s*(\d+(?:\.\d+)?)\s*strain", re.IGNORECASE)
+_TARGET_HOURS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:\+)?\s*hours?\s*(?:of\s*)?sleep|sleep\s*(?:for\s*)?(\d+(?:\.\d+)?)\s*\+?\s*hours?", re.IGNORECASE)
+_EASY_DAY_RE = re.compile(r"\b(easy day|keep it easy|take it easy|light day|easy movement|recovery day|go easy|rest day)\b", re.IGNORECASE)
+_AVOID_WORKOUT_RE = re.compile(r"\b(skip (?:the )?(?:training|workout|gym|session)|don'?t train|do not train|no (?:hard )?(?:training|workout)|avoid (?:training|the gym|a workout))\b", re.IGNORECASE)
+_AVOID_LATE_MEAL_RE = re.compile(r"\b(avoid (?:a )?late (?:heavy )?(?:meal|dinner)|no late (?:meal|dinner)|finish dinner before|early dinner|eat earlier)\b", re.IGNORECASE)
+
+
+def _normalize_trigger_data(
+    trigger_data: dict[str, Any], title: str, text: str, rec_type: str
+) -> dict[str, Any]:
+    """Merge the model's trigger_data with backend-parsed targets/flags.
+
+    Coerces known numeric targets and sets boolean flags (avoid_workout, easy_day,
+    avoid_late_meal) the checkpoint inference relies on. The model's explicit
+    values win over backend guesses.
+    """
+    td: dict[str, Any] = dict(trigger_data) if isinstance(trigger_data, dict) else {}
+    blob = f"{title} {text}"
+
+    # Numeric targets — coerce if present, else try to parse from text.
+    for key in ("strain_limit", "target_hours"):
+        if key in td:
+            n = _num(td[key])
+            if n is not None:
+                td[key] = n
+            else:
+                td.pop(key, None)
+    if "strain_limit" not in td:
+        m = _STRAIN_LIMIT_RE.search(blob)
+        if m:
+            td["strain_limit"] = float(next(g for g in m.groups() if g))
+    if "target_hours" not in td:
+        m = _TARGET_HOURS_RE.search(blob)
+        if m:
+            td["target_hours"] = float(next(g for g in m.groups() if g))
+
+    # Boolean flags (training only for workout flags). Model value wins if set.
+    if rec_type == "training":
+        if "easy_day" not in td and _EASY_DAY_RE.search(blob):
+            td["easy_day"] = True
+        if "avoid_workout" not in td and _AVOID_WORKOUT_RE.search(blob):
+            td["avoid_workout"] = True
+    if "avoid_late_meal" not in td and _AVOID_LATE_MEAL_RE.search(blob):
+        td["avoid_late_meal"] = True
+
+    return td
+
+
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _checkpoint_date(metric: str | None, source_type: str, local_date: date) -> date | None:
     if not metric:
         return None
@@ -89,7 +146,8 @@ def _evaluate_candidate(c: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
         confidence = "medium"
     metric = _normalize_metric(c.get("checkpoint_metric"))
     tags = [str(t) for t in (c.get("tags") or []) if str(t).strip()]
-    trigger_data = c.get("trigger_data") if isinstance(c.get("trigger_data"), dict) else {}
+    raw_trigger = c.get("trigger_data") if isinstance(c.get("trigger_data"), dict) else {}
+    trigger_data = _normalize_trigger_data(raw_trigger, title, text, rec_type)
 
     return True, "ok", {
         "recommendation_type": rec_type,

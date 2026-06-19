@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models.daily_metric import DailyMetric
 from app.services import recommendation_ledger
+from app.services.baseline_engine import STRAIN_HIGH, STRAIN_MODERATE
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ _METRIC_COLUMN = {
     "sleep_hours": DailyMetric.sleep_hours,
     "strain": DailyMetric.strain,
     "weight": DailyMetric.weight,
+    "workout_count": DailyMetric.workout_count,
 }
 
 MetricLookup = Callable[[int, date, str], "float | None"]
@@ -122,6 +124,57 @@ def _evaluate_one(rec, lookup: MetricLookup) -> tuple[str, str | None, str]:
     return ("inconclusive", None, "Could not evaluate — no measurable checkpoint metric.")
 
 
+def infer_followthrough(rec, lookup: MetricLookup) -> tuple[str | None, str | None]:
+    """Infer follow-through from WHOOP data for training/sleep recs (Phase 3D).
+
+    Returns (followed_status, cautious_note) or (None, None) when it can't be
+    inferred (missing data, or a type WHOOP can't speak to like nutrition).
+    Driven by trigger_data flags that extraction normalizes:
+    strain_limit / avoid_workout / easy_day / target_hours.
+    """
+    td = rec.trigger_data or {}
+    day = rec.local_date  # daytime activity applies to the recommendation day
+
+    # Training — explicit strain limit
+    limit = _num(td.get("strain_limit"))
+    if limit is not None:
+        strain = lookup(rec.user_id, day, "strain")
+        if strain is None:
+            return None, None
+        if strain <= limit:
+            return "followed", f"WHOOP shows day strain was {strain:.1f}, within the suggested limit of {limit:.0f}."
+        return "not_followed", f"WHOOP shows day strain reached {strain:.1f}, above the suggested limit of {limit:.0f}."
+
+    # Training — skip workout / easy day
+    if td.get("avoid_workout") or td.get("easy_day"):
+        workouts = lookup(rec.user_id, day, "workout_count")
+        strain = lookup(rec.user_id, day, "strain")
+        if workouts is None and strain is None:
+            return None, None
+        if (workouts or 0) > 0:
+            return "not_followed", "WHOOP shows a workout was logged, so the easy-day recommendation wasn't followed."
+        # no workout logged
+        if strain is not None and strain >= STRAIN_HIGH:
+            return "partial", "WHOOP shows no logged workout but a high-strain day, so the easy day was only partly followed."
+        if strain is None or strain < STRAIN_MODERATE:
+            return "followed", "WHOOP shows no workout and an easy day, consistent with the recommendation."
+        return "partial", "WHOOP shows moderate activity, so the easy day was only partly followed."
+
+    # Sleep — target hours (the night's sleep lands on the checkpoint/waking date)
+    target_h = _num(td.get("target_hours"))
+    if target_h is not None and rec.checkpoint_date is not None:
+        sleep = lookup(rec.user_id, rec.checkpoint_date, "sleep_hours")
+        if sleep is None:
+            return None, None
+        if sleep >= target_h:
+            return "followed", f"WHOOP shows {sleep:.1f}h of sleep, meeting the {target_h:.1f}h target."
+        if sleep < target_h - SLEEP_SHORT:
+            return "not_followed", f"WHOOP shows {sleep:.1f}h of sleep, short of the {target_h:.1f}h target."
+        return "partial", f"WHOOP shows {sleep:.1f}h of sleep, close to the {target_h:.1f}h target."
+
+    return None, None
+
+
 def _db_metric_lookup(session: Session) -> MetricLookup:
     def lookup(user_id: int, day: date, metric: str) -> float | None:
         col = _METRIC_COLUMN.get(metric)
@@ -155,27 +208,51 @@ def evaluate_due(
     due = recommendation_ledger.get_due_checkpoints(session, user_id, as_of_date)
     checked = inconclusive = 0
     for rec in due:
-        # If the user told us they didn't follow it, don't imply it worked/failed.
-        if rec.followed_status == "not_followed":
+        # Resolve follow-through: an explicit user mark wins; otherwise try to
+        # infer it from WHOOP. This must happen BEFORE judging the advice.
+        explicit = rec.followed_status != "unknown"
+        followed = rec.followed_status
+        follow_note: str | None = None
+        if not explicit:
+            inferred, follow_note = infer_followthrough(rec, lookup)
+            if inferred is not None:
+                followed = inferred
+
+        # If it wasn't followed (said or shown), don't treat the outcome as a fair test.
+        if followed == "not_followed":
+            if explicit:
+                summary = "Could not evaluate the recommendation because it appears it was not followed."
+            else:
+                summary = (follow_note or "WHOOP suggests this wasn't followed") + \
+                    " I won't treat the outcome as a fair test of the advice."
             recommendation_ledger.mark_inconclusive(
-                session, rec.id,
-                outcome_summary="Could not evaluate the recommendation because it appears it was not followed.",
-                commit=False,
+                session, rec.id, outcome_summary=summary,
+                followed_status=None if explicit else "not_followed", commit=False,
             )
             inconclusive += 1
-            logger.info(
-                "recommendation checkpoint user=%s rec=%s outcome=inconclusive reason=not_followed",
-                user_id, rec.id,
-            )
+            logger.info("recommendation checkpoint user=%s rec=%s outcome=inconclusive reason=not_followed explicit=%s", user_id, rec.id, explicit)
             continue
 
-        outcome, followed, summary = _evaluate_one(rec, lookup)
-        if rec.followed_status == "followed":
+        # Followed / partial / still-unknown -> judge the outcome on the metric.
+        outcome, auto_followed, summary = _evaluate_one(rec, lookup)
+        if explicit and followed == "followed":
             summary = f"{summary} (You marked this as followed.)"
-        # A manually set follow-through wins — don't let auto-inference overwrite it.
-        eff_followed = None if rec.followed_status != "unknown" else followed
+        elif follow_note:  # inferred from WHOOP
+            summary = f"{follow_note} {summary}"
+
+        # What follow-through to persist: explicit stays as-is; else inferred; else
+        # whatever the metric evaluator could tell (e.g. strain/sleep comparison).
+        if explicit:
+            eff_followed = None
+        elif followed != "unknown":
+            eff_followed = followed
+        else:
+            eff_followed = auto_followed
+
         if outcome == "inconclusive":
-            recommendation_ledger.mark_inconclusive(session, rec.id, outcome_summary=summary, commit=False)
+            recommendation_ledger.mark_inconclusive(
+                session, rec.id, outcome_summary=summary, followed_status=eff_followed, commit=False,
+            )
             inconclusive += 1
         else:
             recommendation_ledger.mark_checked(

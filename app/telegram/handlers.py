@@ -39,6 +39,7 @@ from app.services import (
     memory_store,
     recommendation_checkpoint,
     recommendation_extractor,
+    recommendation_followthrough,
     recommendation_ledger,
 )
 from app.services.chat_logger import log_outgoing
@@ -1154,6 +1155,39 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(_wr_msg)
         log_outgoing(telegram_id, _wr_msg, "ai_weekly")
         return
+
+    # Recommendation follow-through: "I skipped training", "stayed under 10", etc.
+    # Only considered when there are recent pending recommendations to update.
+    ft_pending: list = []
+    ft_user_id: int | None = None
+    ft_now: dict | None = None
+    with SessionLocal() as session:
+        _ft_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if _ft_user is not None:
+            ft_user_id = _ft_user.id
+            ft_now = now_block(_ft_user, get_user_now(_ft_user))
+            _ft_today = get_user_today(_ft_user)
+            ft_pending = [
+                r for r in recommendation_ledger.get_pending(session, _ft_user.id, limit=10)
+                if (_ft_today - r.local_date).days <= 3
+            ]
+    if ft_pending and recommendation_followthrough.looks_like_followthrough(question):
+        decision = recommendation_followthrough.match_deterministic(question, ft_pending)
+        if decision is None:
+            decision = await recommendation_followthrough.detect_with_ai(question, ft_pending, ft_now, ft_user_id)
+        if decision and decision.get("should_update") and decision.get("recommendation_id"):
+            with SessionLocal() as session:
+                rec = recommendation_followthrough.apply_decision(session, ft_user_id, decision)
+            if rec is not None:
+                reply = recommendation_followthrough.confirmation_text(decision.get("followed_status"))
+                await update.message.reply_text(reply)
+                log_outgoing(telegram_id, reply, "recommendation_followthrough", user_id=ft_user_id)
+                return
+        elif decision and decision.get("clarifying_question"):
+            clarify_q = decision["clarifying_question"]
+            await update.message.reply_text(clarify_q)
+            log_outgoing(telegram_id, clarify_q, "recommendation_followthrough", user_id=ft_user_id)
+            return
 
     with SessionLocal() as session:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))

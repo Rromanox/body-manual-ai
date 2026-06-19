@@ -638,9 +638,25 @@ DO NOT store:
 Rules:
 - should_store=false for anything in the DO NOT list, or when the message is just a question/observation. If nothing is worth storing, return {"recommendations": []}.
 - title is a short imperative (<= 80 chars). recommendation_text is the action as stated. reason is the data justification if the message gives one. expected_outcome is what should change if they follow it.
-- trigger_data: include any numeric limits/targets/triggers mentioned (e.g. {"strain_limit": 10}, {"target_hours": 8}, {"hrv_pct_below": 16}). {} if none.
+- trigger_data: include structured targets/flags so follow-through can be checked later. Numbers: {"strain_limit": 10}, {"target_hours": 8}, {"target_bedtime": "22:45"}, {"hrv_pct_below": 16}. Boolean flags when they apply: {"easy_day": true} (take it easy / recovery day), {"avoid_workout": true} (skip training), {"avoid_late_meal": true} (no late/heavy dinner). {} if none apply.
 - Do NOT invent numbers. Do NOT output a checkpoint date — the backend decides timing.
 - daily: the single main action. focus: the one focus. weekly: only a clear next-week action. qa: only genuinely actionable advice."""
+
+FOLLOWTHROUGH_EXTRACTOR_SYSTEM_PROMPT = """\
+You read ONE incoming user message and decide whether it reports follow-through on a recent coaching recommendation — i.e. whether the user did or didn't do what was suggested.
+
+Input: JSON with "message", "pending_recommendations" (list of {id, type, title, recommendation}), and "now".
+
+Output ONLY a JSON object, no prose, no code fences:
+{"should_update": true|false, "recommendation_id": <id or null>, "followed_status": "followed"|"not_followed"|"partial"|"unknown", "confidence": "low"|"medium"|"high", "reason": "...", "clarifying_question": null}
+
+Rules:
+- should_update=true ONLY when the message is a past-tense self-report that clearly maps to ONE pending recommendation ("I trained anyway", "didn't train today", "stayed under 10", "only walked").
+- recommendation_id MUST be one of the ids in pending_recommendations. If the message clearly refers to the most recent relevant one, choose that.
+- followed_status: followed = did what was advised; not_followed = did the opposite; partial = partly did it ("only walked" when told to take an easy day); unknown only when should_update=false.
+- Questions, future plans ("should I train?", "I'll skip today"), and general chat are NOT follow-through -> should_update=false.
+- If it looks like follow-through but you can't tell WHICH recommendation, set should_update=false and put ONE short clarifying_question ("Do you mean the recommendation to skip training today?"). Otherwise clarifying_question=null.
+- Never update more than one recommendation. Never invent an id. Never treat an intention ("I'm going to rest") as done."""
 
 _client: AsyncOpenAI | None = None
 
@@ -948,6 +964,42 @@ async def extract_recommendations(
         return []
     recs = parsed.get("recommendations")
     return recs if isinstance(recs, list) else []
+
+
+async def extract_recommendation_followthrough(
+    message: str,
+    pending_recommendations: list[dict[str, Any]],
+    now: dict[str, Any],
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    """Decide whether a user message reports follow-through on a pending rec.
+
+    Returns the parsed decision dict, or {"should_update": False} on failure —
+    always safe to call. Backend validates the result before acting on it.
+    """
+    payload = {
+        "message": message,
+        "pending_recommendations": pending_recommendations,
+        "now": now,
+    }
+    try:
+        response = await _respond(
+            route=ModelRoute.EXTRACT,
+            purpose="extract_followthrough",
+            instructions=FOLLOWTHROUGH_EXTRACTOR_SYSTEM_PROMPT,
+            input=[{"role": "user", "content": json.dumps(payload)}],
+            max_output_tokens=400,
+            user_id=user_id,
+        )
+        raw = (response.output_text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+    except Exception:
+        return {"should_update": False}
+    return parsed if isinstance(parsed, dict) else {"should_update": False}
 
 
 async def generate_daily_message(payload: dict[str, Any], user_id: int | None = None) -> str:
