@@ -1,13 +1,18 @@
-"""Scheduled morning message job.
+"""Scheduled morning message job — wake-aware.
 
-Pulls fresh WHOOP data (and Withings body comp if connected), generates today's
-coach message, sends it via Telegram, then prompts the daily check-in.
+Instead of firing at a fixed clock hour, the job polls across a local morning
+window (MORNING_WATCH_START_LOCAL .. MORNING_WATCH_CUTOFF_LOCAL) and sends the
+message once WHOOP shows the user's main (non-nap) sleep has ended and
+sleep/recovery data is usable. If the data is still not ready by the cutoff, a
+degraded fallback is sent. At most one message per local date (idempotency via
+coach_messages). The /today manual command is a separate, unconditional path and
+is unaffected by this watcher.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import select
 
@@ -41,30 +46,100 @@ from app.telegram.keyboards import checkin_keyboard
 
 logger = logging.getLogger(__name__)
 
-# How many hours after the configured send-hour we'll still send (covers a
-# missed/late tick). Idempotency below guarantees at most one send per day.
-_SEND_WINDOW_HOURS = 3
+# After the cutoff we still allow the degraded fallback (or a late "ready" send)
+# for this many minutes, then give up for the day. Bounds the watch so a
+# late-starting app can't fire a "morning" message in the evening.
+_FALLBACK_GRACE_MINUTES = 180
 
-# Guards against a still-running retry loop being re-entered by a later tick.
+# Guards against one tick's send being re-entered by an overlapping tick.
 _in_flight: set[int] = set()
 
 
+def morning_cron_minute_spec(interval_minutes: int) -> str:
+    """Cron `minute` spec that fires every `interval_minutes` (e.g. 30 -> "0,30").
+
+    Clamped to [1, 60] so a bad config can't break the scheduler.
+    """
+    interval = max(1, min(60, interval_minutes))
+    return ",".join(str(m) for m in range(0, 60, interval))
+
+
+def _local_minutes(user: User) -> int:
+    now = get_user_now(user)
+    return now.hour * 60 + now.minute
+
+
+def _sleep_usable(row: DailyMetric | None) -> bool:
+    """True when today's row has usable main-sleep data.
+
+    metrics_normalizer maps only the SCORED, non-nap primary sleep to the local
+    waking date, so a row that carries recovery or sleep hours means the main
+    sleep ended and is usable. Naps never create a row, so they can't trigger a
+    send. A missing row, or a row with neither metric, means "still pending".
+    """
+    return row is not None and (row.recovery_score is not None or row.sleep_hours is not None)
+
+
+def decide_morning_action(
+    now_minutes: int,
+    start_minutes: int,
+    cutoff_minutes: int,
+    *,
+    ready: bool,
+    already_sent: bool,
+    grace_minutes: int = _FALLBACK_GRACE_MINUTES,
+) -> str:
+    """Pure decision for one tick. Returns one of:
+
+    - "skip"          already sent, too early, or past the whole window
+    - "wait"          in window, main sleep not ready yet — try again next tick
+    - "send_full"     main sleep ended + usable — send the real message
+    - "send_degraded" past cutoff and still not ready — send the fallback
+
+    A "ready" user sends whenever their sleep finalizes, even past the cutoff
+    (someone who sleeps until 11 still gets a real morning message), up to the
+    grace ceiling. The cutoff only governs the degraded fallback.
+    """
+    if already_sent:
+        return "skip"
+    if now_minutes < start_minutes:
+        return "skip"
+    if now_minutes > cutoff_minutes + grace_minutes:
+        return "skip"
+    if ready:
+        return "send_full"
+    if now_minutes >= cutoff_minutes:
+        return "send_degraded"
+    return "wait"
+
+
+def has_sent_morning_message(session, user_id: int, local_date: date) -> bool:
+    """Whether today's daily message already went out (idempotency, no new table)."""
+    return session.scalar(
+        select(CoachMessage.id).where(
+            CoachMessage.user_id == user_id,
+            CoachMessage.message_type == "daily",
+            CoachMessage.date == local_date,
+        )
+    ) is not None
+
+
 async def run_daily_message() -> None:
-    """Hourly tick: send the morning message to each active user whose LOCAL
-    send-time window has arrived. Per-user timezone (and DST) handled by
-    timekit; once-per-day idempotency handled in _send_for_user."""
-    send_hour = settings.daily_pull_hour
+    """Poll tick: for each active WHOOP user inside their LOCAL morning watch
+    window, check wake-readiness and send when ready (or a degraded fallback at
+    the cutoff). Per-user timezone/DST via timekit; once-per-day idempotency in
+    _send_for_user."""
+    start_m = settings.morning_watch_start_minutes
+    ceiling_m = settings.morning_watch_cutoff_minutes + _FALLBACK_GRACE_MINUTES
     with SessionLocal() as session:
         users = session.scalars(
             select(User)
             .join(OAuthConnection, OAuthConnection.user_id == User.id)
             .where(OAuthConnection.provider == "whoop", OAuthConnection.status == "active")
         ).all()
-        # Gate on each user's own local clock, never the server's.
-        due_ids = [
-            u.id for u in users
-            if send_hour <= get_user_now(u).hour < send_hour + _SEND_WINDOW_HOURS
-        ]
+        # Gate on each user's own local clock, never the server's. Only users
+        # currently inside [start, cutoff+grace] are worth a readiness check.
+        due_ids = [u.id for u in users if start_m <= _local_minutes(u) <= ceiling_m]
 
     if not due_ids:
         return
@@ -79,21 +154,14 @@ async def run_daily_message() -> None:
 async def _send_for_user(user_id: int) -> None:
     if user_id in _in_flight:
         return
-    # Idempotency: if today's daily message already went out, do nothing. This is
-    # what makes the hourly send-window safe — only the first qualifying tick sends.
+    # Idempotency: if today's daily message already went out, do nothing. Only the
+    # first qualifying tick of the day sends; later ticks short-circuit here.
     with SessionLocal() as session:
         user = session.get(User, user_id)
         if user is None:
             return
-        already_sent = session.scalar(
-            select(CoachMessage.id).where(
-                CoachMessage.user_id == user_id,
-                CoachMessage.message_type == "daily",
-                CoachMessage.date == get_user_today(user),
-            )
-        )
-    if already_sent:
-        return
+        if has_sent_morning_message(session, user_id, get_user_today(user)):
+            return
 
     _in_flight.add(user_id)
     try:
@@ -107,50 +175,58 @@ async def _do_send_for_user(user_id: int) -> None:
 
     bot = get_application().bot
 
-    # Pull-at-send with retry: SPEC says retry every 30 min (max 4) if today's recovery
-    # hasn't finalized yet (WHOOP recovery typically scores around wake time)
-    for attempt in range(5):
-        if attempt > 0:
-            logger.info(
-                "Recovery not yet available for user %s — retry %d/4 in 30 min", user_id, attempt
+    # Wake-aware: one fresh pull per tick, then decide. The polling cadence (the
+    # scheduler re-running every MORNING_WATCH_INTERVAL_MINUTES) IS the retry —
+    # we re-pull each tick until the main sleep is usable or the cutoff forces a
+    # degraded send. No blocking sleep loop, so _in_flight is held only briefly.
+    with SessionLocal() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            return
+        try:
+            await pull_and_store(session, user, days=7)
+            recalculate_observations(session, user_id)
+        except WhoopAuthError as exc:
+            await send_admin_alert(
+                f"WHOOP auth expired for user {user_id} during morning pull: {exc}"
             )
-            await asyncio.sleep(30 * 60)
-
-        with SessionLocal() as session:
-            user = session.get(User, user_id)
-            if user is None:
-                return
-            try:
-                await pull_and_store(session, user, days=7 if attempt == 0 else 2)
-                if attempt == 0:
-                    recalculate_observations(session, user_id)
-            except WhoopAuthError as exc:
-                await send_admin_alert(
-                    f"WHOOP auth expired for user {user_id} during morning pull: {exc}"
-                )
-                await bot.send_message(
-                    chat_id=user.telegram_id,
-                    text="Your WHOOP connection stopped working — tap /connect_whoop to reconnect.",
-                )
-                return
-            except Exception as exc:
-                logger.exception("Morning pull failed for user %s", user_id)
-                await send_admin_alert(f"Morning pull failed for user {user_id}: {exc}")
-                return
-
-            target_date = get_user_today(user)
-            has_recovery = bool(
-                session.scalar(
-                    select(DailyMetric.recovery_score).where(
-                        DailyMetric.user_id == user_id,
-                        DailyMetric.date == target_date,
-                        DailyMetric.recovery_score.is_not(None),
-                    )
-                )
+            await bot.send_message(
+                chat_id=user.telegram_id,
+                text="Your WHOOP connection stopped working — tap /connect_whoop to reconnect.",
             )
+            return
+        except Exception as exc:
+            logger.exception("Morning pull failed for user %s", user_id)
+            await send_admin_alert(f"Morning pull failed for user {user_id}: {exc}")
+            return
 
-        if has_recovery or attempt == 4:
-            break
+        target_date = get_user_today(user)
+        today_row = session.scalar(
+            select(DailyMetric).where(
+                DailyMetric.user_id == user_id, DailyMetric.date == target_date
+            )
+        )
+        ready = _sleep_usable(today_row)
+        now_minutes = _local_minutes(user)
+
+    action = decide_morning_action(
+        now_minutes,
+        settings.morning_watch_start_minutes,
+        settings.morning_watch_cutoff_minutes,
+        ready=ready,
+        already_sent=False,
+    )
+    if action in ("skip", "wait"):
+        logger.info(
+            "Morning watch: user %s not sending yet (action=%s, ready=%s, now=%dmin)",
+            user_id, action, ready, now_minutes,
+        )
+        return
+    if action == "send_degraded":
+        logger.info(
+            "Morning watch: user %s past cutoff without usable sleep — sending degraded message",
+            user_id,
+        )
 
     # Withings pull is non-fatal — missing body comp is fine, WHOOP still runs
     withings_telegram_id: int | None = None

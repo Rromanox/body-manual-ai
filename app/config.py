@@ -36,6 +36,27 @@ def _route_model(env_var: str) -> str:
     return os.getenv(env_var) or _global_openai_model()
 
 
+def parse_hhmm_to_minutes(value: str | None, default: str) -> int:
+    """Parse "HH:MM" local time into minutes-since-midnight; fall back to default.
+
+    Used for the wake-aware morning watch window. Invalid/blank input falls back
+    to the supplied default so a bad env var can never crash startup.
+    """
+    for candidate in (value, default):
+        if not candidate:
+            continue
+        try:
+            hh, mm = candidate.split(":")
+            h, m = int(hh), int(mm)
+            if 0 <= h < 24 and 0 <= m < 60:
+                return h * 60 + m
+        except (ValueError, AttributeError):
+            continue
+    # default is a trusted constant; this line is effectively unreachable
+    h, m = default.split(":")
+    return int(h) * 60 + int(m)
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
@@ -69,6 +90,18 @@ class Settings:
     # SPEC §8: weekly summary "sent Sunday evening" — local hour, same gating
     # style as daily_pull_hour.
     weekly_send_hour: int = field(default_factory=lambda: int(os.getenv("WEEKLY_SEND_HOUR", "18")))
+    # Wake-aware morning message: poll WHOOP across this LOCAL window and send once
+    # the main sleep has ended and recovery/sleep is usable; at the cutoff, send a
+    # degraded fallback. Stored as minutes-since-midnight for easy comparison.
+    morning_watch_start_minutes: int = field(
+        default_factory=lambda: parse_hhmm_to_minutes(os.getenv("MORNING_WATCH_START_LOCAL"), "05:00")
+    )
+    morning_watch_cutoff_minutes: int = field(
+        default_factory=lambda: parse_hhmm_to_minutes(os.getenv("MORNING_WATCH_CUTOFF_LOCAL"), "10:30")
+    )
+    morning_watch_interval_minutes: int = field(
+        default_factory=lambda: int(os.getenv("MORNING_WATCH_INTERVAL_MINUTES", "30"))
+    )
 
 
 settings = Settings()

@@ -76,13 +76,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.default_timezone))
-    # Fire every hour on the hour. run_daily_message decides per user whether
-    # their LOCAL send-time has arrived — tz-aware and DST-correct via zoneinfo,
-    # not a hardcoded UTC hour. max_instances > 1 so one user's in-progress
-    # retry loop never blocks the tick that serves a user in another timezone.
+    # Wake-aware morning message: poll every MORNING_WATCH_INTERVAL_MINUTES.
+    # run_daily_message decides per user whether their LOCAL morning watch window
+    # has arrived and whether their main sleep is ready — tz-aware and DST-correct
+    # via zoneinfo. max_instances > 1 so a slow per-user send never blocks the
+    # tick serving a user in another timezone.
+    from app.jobs.daily_message import morning_cron_minute_spec
     scheduler.add_job(
         run_daily_message,
-        CronTrigger(minute=0),
+        CronTrigger(minute=morning_cron_minute_spec(settings.morning_watch_interval_minutes)),
         id="daily_morning_message",
         max_instances=6,
         coalesce=True,
