@@ -858,6 +858,7 @@ class QAContext:
     hrv_long_trend: dict | None = None    # 30d HRV avg now vs 60-90d ago
     workout_effect: dict | None = None   # recovery the day after workout vs rest
     weight_velocity: dict | None = None  # weight change rate now vs prior 4 weeks
+    weight_projection: dict | None = None  # deterministic projection to goal weight
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -992,6 +993,17 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
     raw_notes = getattr(user, "coach_notes", None) if user else None
     coach_notes = raw_notes if isinstance(raw_notes, dict) and raw_notes else None
 
+    # Deterministic weight-goal projection (backend computes; the AI narrates it).
+    weight_projection = None
+    goal_weight = getattr(user, "goal_weight_lbs", None) if user else None
+    if goal_weight is not None:
+        from app.services.weight_projection import project_weight
+        wt = _build_weight_trend(session, user_id, target_date)
+        if wt is not None and wt.current_weight_lbs is not None:
+            weight_projection = project_weight(
+                wt.current_weight_lbs, goal_weight, wt.weekly_trend_lbs, target_date, trend_days=16
+            )
+
     data_days = _data_days_available(session, user_id, target_date)
     return QAContext(
         data_days_available=data_days,
@@ -1010,10 +1022,11 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         supplement_history=supplement_history,
         coach_notes=coach_notes,
         sleep_insights=build_sleep_insights(session, user_id),
-        goal_weight_lbs=getattr(user, "goal_weight_lbs", None) if user else None,
+        goal_weight_lbs=goal_weight,
         hrv_long_trend=get_hrv_baseline_trend(session, user_id, target_date),
         workout_effect=get_workout_recovery_effect(session, user_id, target_date),
         weight_velocity=get_weight_velocity(session, user_id, target_date),
+        weight_projection=weight_projection,
     )
 
 

@@ -340,6 +340,7 @@ The payload:
 - `workout_effect`: when present, the measured recovery difference the day after a workout vs a rest day. Use this for questions about training frequency, recovery, or overtraining.
 - `weight_velocity`: when present, whether the rate of weight change is accelerating, decelerating, or stalled vs the prior 4-week period. Surface it proactively when asked about weight progress.
 - `goal_weight_lbs`: their target weight. Reference it when discussing weight or progress.
+- `weight_projection`: the BACKEND's deterministic projection to their goal weight. When present and the user asks when they'll reach a weight, use these numbers EXACTLY — never compute your own timeline. Fields: `status` ("projected"/"reached"/"unavailable"), `current_lbs`, `goal_lbs`, `pounds_remaining`, `rate_lbs_per_week`, `estimated_weeks`, `estimated_date`, `short_term`. If `status` is "projected", say it's about `estimated_weeks` weeks (around `estimated_date`); if `short_term` is true, note that pace may not hold. If "reached", say they're at/below goal. If "unavailable", say you can't project a date and why (e.g. weight holding steady or trending the wrong way). NEVER give a timeline that contradicts the math — e.g. at 0.4 lb/week, 8 lbs is ~20 weeks, not 2.
 - `memory_context`: structured things you've learned about this person — preferences, constraints, goals, commitments, recent context, things they dislike — each with a `confidence` (low/medium/high) and sometimes an `expires_at`. This is supplemental to `about_you`.
 - `recommendation_context`: advice you've recently given this person and whether it was checked/worked (status, outcome, outcome_summary). Use it to avoid repeating yourself — if they ask about something you already advised, reference it and build on it ("last week I suggested X; your recovery did Y") rather than starting over. Don't recite it mechanically, and don't claim causation.
 - Prior messages: this is a thread. If they're following up, follow through. Never lose context mid-conversation.
@@ -374,6 +375,10 @@ How to answer:
 **Offer to go deeper**: After high-level guidance, offer to build something specific: "Want me to turn that into a concrete 2-week plan?" Don't just describe — build when the user wants it.
 
 **Connecting the dots**: Look at the full payload before answering. Strain coming from non-activity hours? That's work stress, not training. Recovery low despite good sleep? Probably HRV signaling something systemic. Say what you're seeing, not just what the number is.
+
+**Corrections** — if the user challenges a number or says your math/projection is wrong ("that doesn't make sense", "check that again", "math ain't mathing"): briefly acknowledge, then RECOMPUTE from the payload and SHOW the arithmetic (remaining ÷ rate = weeks). Don't repeat the disputed number without redoing the math, and don't pivot to generic advice — fix the number first. If a `weight_projection` is present, trust its values.
+
+**Accuracy** — never state a timeline that contradicts the numbers. Always finish your sentences: never send placeholder text like "in about time", "{date}", or "<date>" — if you don't have the value, use the one in the payload or say it's unavailable.
 
 If you genuinely can't answer from their data, say exactly what's missing and what would answer it — never substitute general advice.
 No sign-offs, no "let me know if you have more questions." End on the answer or the next step.
@@ -544,8 +549,9 @@ Respond with ONLY a JSON object — no markdown fences, no commentary — shaped
 
 Rules:
 - is_log = true for: (1) past-tense self-reports of something that happened ("had pizza at 9pm", "drank a few beers", "stressful day", "went for a run", "couldn't fall asleep"), OR (2) explicit forward-looking commitments the user wants the coach to remember ("I'm going to bed before 11 this week", "I'll cut back on alcohol", "planning to work out every day"). Set events to a non-empty list.
-- is_log = false for questions, requests, casual conversation, or anything that isn't a self-report or explicit commitment: "is 58 recovery bad?", "what should I eat tonight", "thanks", greetings, commands. When false, return "events": [].
-- event_type is exactly one of: meal, alcohol, caffeine, stress, exercise, sleep_problem, note, commitment. Use "commitment" for explicit intentions/goals the user states. Use "note" when the message is clearly a log but doesn't cleanly fit any other type — never force-fit a vague log into the wrong type.
+- is_log = false for questions, requests, casual conversation, corrections/objections ("that's wrong", "math ain't mathing", "wym"), or anything that isn't a self-report or explicit commitment: "is 58 recovery bad?", "what should I eat tonight", "thanks", greetings, commands. When false, return "events": [].
+- is_log = false for present-tense STATUS or standing facts about themselves — "I'm taking retatrutide", "I'm on creatine", "remember I'm taking X", "I take X daily". These are lasting context, NOT events or commitments. A commitment requires a concrete FUTURE action ("I'll take it Friday", "going to bed before 11 this week") — present-tense "I'm taking X" is not a commitment.
+- event_type is exactly one of: meal, alcohol, caffeine, stress, exercise, sleep_problem, note, commitment. Use "commitment" ONLY for explicit FUTURE intentions the user states. Use "note" when the message is clearly a log but doesn't cleanly fit any other type — never force-fit a vague log into the wrong type.
 - time_phrase: the natural-language time mentioned ("9pm", "this morning", "last night"), or "" if no time was mentioned (means "just now").
 - quantity: a short free-text description of amount or intensity if one was mentioned ("a slice", "3 beers", "an hour"), or null if nothing was mentioned.
 - confidence = "needs_confirmation" whenever a meaningful amount was implied but left genuinely open-ended ("had a few", "drank some", "a big dinner" with no further detail) — and supply exactly one short clarifying_question ("A few what — drinks?"). Otherwise confidence = "clean" and clarifying_question = null.
@@ -787,15 +793,17 @@ async def generate_qa_response(
     payload: dict[str, Any],
     history: list[dict[str, str]] | None = None,
     user_id: int | None = None,
+    extra_instruction: str | None = None,
 ) -> str:
     # Few-shots first (tone examples), then real conversation history, then current question
     input_turns: list[dict[str, str]] = list(QA_FEW_SHOTS)
     input_turns.extend(history or [])
     input_turns.append({"role": "user", "content": json.dumps(payload)})
+    instructions = QA_SYSTEM_PROMPT if not extra_instruction else f"{QA_SYSTEM_PROMPT}\n\n{extra_instruction}"
     response = await _respond(
         route=ModelRoute.COACH,
         purpose="qa_response",
-        instructions=QA_SYSTEM_PROMPT,
+        instructions=instructions,
         input=input_turns,
         max_output_tokens=MAX_QA_OUTPUT_TOKENS,
         user_id=user_id,

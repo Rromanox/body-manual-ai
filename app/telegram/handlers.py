@@ -38,10 +38,13 @@ from app.services import (
     memory_extractor,
     memory_retriever,
     memory_store,
+    message_intent,
+    output_guard,
     recommendation_checkpoint,
     recommendation_extractor,
     recommendation_followthrough,
     recommendation_ledger,
+    weight_projection,
 )
 from app.services.chat_logger import log_outgoing
 from app.services.event_engine import EVENT_TYPES, apply_event_to_tags, enrich_closed_loops_with_meal_gap
@@ -1214,13 +1217,43 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         log_outgoing(telegram_id, _wr_msg, "ai_weekly")
         return
 
+    # A correction/objection ("that's wrong", "math ain't mathing", "wym") must
+    # never be swallowed by the log/reminder detectors — let it continue to Q&A
+    # so the coach recomputes.
+    is_correction = message_intent.is_correction(question)
+
+    # Current-status memory ("remember I'm taking retatrutide") — store as a fact,
+    # never a commitment or event. Skipped for corrections.
+    if not is_correction:
+        status_phrase = message_intent.detect_status_memory(question)
+        if status_phrase:
+            with SessionLocal() as session:
+                _sm_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+                if _sm_user is not None:
+                    _sm_uid = _sm_user.id
+                    content = f"Taking {status_phrase}"
+                    already = memory_store.find_active_duplicate(session, _sm_uid, "stable_fact", content) is not None
+                    memory_store.add_memory(
+                        session, _sm_uid, "stable_fact", content,
+                        source="user_stated", confidence="high", tags=["status"], dedupe=True,
+                    )
+            if _sm_user is not None:
+                reply = (
+                    f"Got it — I already have {status_phrase} in your context."
+                    if already else
+                    f"Got it — I'll treat {status_phrase} as part of your current context."
+                )
+                await update.message.reply_text(reply)
+                log_outgoing(telegram_id, reply, "memory", user_id=_sm_uid)
+                return
+
     # Retatrutide reminder via natural language: "I took my shot today",
     # "took reta yesterday", "remind me every 6 days for reta".
     with SessionLocal() as session:
         _reta_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
         _reta_uid = _reta_user.id if _reta_user else None
         _reta_today = get_user_today(_reta_user) if _reta_user else None
-    if _reta_user is not None:
+    if _reta_user is not None and not is_correction:
         reta_intent = health_reminder.detect_reta_message(question, _reta_today)
         if reta_intent is not None:
             with SessionLocal() as session:
@@ -1252,7 +1285,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 r for r in recommendation_ledger.get_pending(session, _ft_user.id, limit=10)
                 if (_ft_today - r.local_date).days <= 3
             ]
-    if ft_pending and recommendation_followthrough.looks_like_followthrough(question):
+    if ft_pending and not is_correction and recommendation_followthrough.looks_like_followthrough(question):
         decision = recommendation_followthrough.match_deterministic(question, ft_pending)
         if decision is None:
             decision = await recommendation_followthrough.detect_with_ai(question, ft_pending, ft_now, ft_user_id)
@@ -1272,7 +1305,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     with SessionLocal() as session:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))
-    if user is not None:
+    if user is not None and not is_correction:
         now = get_user_now(user)
         try:
             extraction = await classify_and_extract(question, now_block(user, now), user_id=user.id)
@@ -1348,6 +1381,28 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await send_admin_alert(f"Q&A call failed for user {user_id}: {exc}")
         await update.message.reply_text("I hit a snag answering that — try again in a moment.")
         return
+
+    # Output guard: never let unresolved placeholders ("in about time", "{date}")
+    # reach the user. Regenerate once; if still broken, fall back deterministically.
+    if output_guard.has_unresolved_placeholder(response_text):
+        logger.warning("Q&A placeholder detected for user %s — regenerating", user_id)
+        try:
+            response_text = await generate_qa_response(
+                payload, history=history, user_id=user_id,
+                extra_instruction=(
+                    "Your previous answer contained unresolved placeholder or broken text. "
+                    "Rewrite it cleanly using the exact numbers in the payload; never output "
+                    "placeholders like 'in about time', '{date}', '<date>', 'TBD', or 'None'."
+                ),
+            )
+        except Exception:
+            logger.exception("Q&A repair regeneration failed for user %s", user_id)
+        if output_guard.has_unresolved_placeholder(response_text):
+            wp = payload.get("weight_projection")
+            response_text = (
+                weight_projection.format_projection(wp) if wp
+                else "Let me redo that — could you ask again?"
+            )
 
     if msg_id:
         with SessionLocal() as session:

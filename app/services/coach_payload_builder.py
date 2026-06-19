@@ -271,6 +271,8 @@ def build_qa_payload(
         payload["workout_effect"] = context.workout_effect
     if context.weight_velocity:
         payload["weight_velocity"] = context.weight_velocity
+    if context.weight_projection:
+        payload["weight_projection"] = context.weight_projection
     # Phase 2A: structured memory plumbed in alongside about_you. No prompt
     # references it yet — activation is Phase 2B.
     if structured_memories:
