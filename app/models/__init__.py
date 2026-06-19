@@ -6,6 +6,7 @@ from app.models.message_log import MessageLog
 from app.models.oauth_connection import OAuthConnection
 from app.models.observation import Observation
 from app.models.user import User
+from app.models.user_memory import UserMemory
 
 __all__ = [
     "CoachMessage",
@@ -16,4 +17,5 @@ __all__ = [
     "OAuthConnection",
     "Observation",
     "User",
+    "UserMemory",
 ]
