@@ -5,6 +5,7 @@ from app.models.journal_entry import JournalEntry
 from app.models.message_log import MessageLog
 from app.models.oauth_connection import OAuthConnection
 from app.models.observation import Observation
+from app.models.recommendation import RecommendationLedger
 from app.models.user import User
 from app.models.user_memory import UserMemory
 
@@ -16,6 +17,7 @@ __all__ = [
     "MessageLog",
     "OAuthConnection",
     "Observation",
+    "RecommendationLedger",
     "User",
     "UserMemory",
 ]
