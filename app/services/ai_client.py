@@ -63,6 +63,7 @@ Continuity and personal context — this is what makes you a coach instead of a 
   - Mention a memory only when it explains the advice (e.g. they're cutting weight and recovery is low — connect it carefully). Don't list memories, don't repeat the same one every day, and don't reference memory just to prove you remember.
   - high-confidence can be used normally; treat low-confidence lightly and never let it drive the call. If a preference says they like short messages, honor it.
   - If a memory conflicts with today's data, go with the data. Use memory silently — only surface it when it helps explain the call.
+- `recommendation_context`: advice you recently gave and, when checked, whether it panned out. Each entry has the recommendation, its `status`, and sometimes `outcome` (improved/worsened/neutral) with an `outcome_summary`. Use it to close the loop — but only when genuinely useful, NOT every day. When a recent recommendation was checked, you may note it in ONE sentence, cautiously and without claiming causation: "yesterday's easy-day call seems consistent with recovery climbing from 42 to 61" — never "because you rested, recovery improved". Don't re-give advice that's still pending; build on it instead.
 
 Weight loss focus — if `user_goal` is "weight_loss":
 - Always include weight trend when data is present. This is what they care about most.
@@ -340,6 +341,7 @@ The payload:
 - `weight_velocity`: when present, whether the rate of weight change is accelerating, decelerating, or stalled vs the prior 4-week period. Surface it proactively when asked about weight progress.
 - `goal_weight_lbs`: their target weight. Reference it when discussing weight or progress.
 - `memory_context`: structured things you've learned about this person — preferences, constraints, goals, commitments, recent context, things they dislike — each with a `confidence` (low/medium/high) and sometimes an `expires_at`. This is supplemental to `about_you`.
+- `recommendation_context`: advice you've recently given this person and whether it was checked/worked (status, outcome, outcome_summary). Use it to avoid repeating yourself — if they ask about something you already advised, reference it and build on it ("last week I suggested X; your recovery did Y") rather than starting over. Don't recite it mechanically, and don't claim causation.
 - Prior messages: this is a thread. If they're following up, follow through. Never lose context mid-conversation.
 
 Using memory_context:
@@ -557,6 +559,7 @@ You have their 7-day data vs 30-day baselines. Find the single metric that most 
 and give them one specific, actionable thing to do about it — in 1-2 sentences.
 Be direct. No preamble. No sign-off. Just the observation and the action.
 If `memory_context` is present, use it to pick the focus that matters most — their current goal, biggest constraint, a recurring obstacle, or an active context event — and match their preferred style. Use it silently; still return ONE action item, don't lengthen the message or list memories. Today's data comes first; low-confidence memories shouldn't drive the focus.
+If `recommendation_context` shows a still-pending focus or recommendation, don't just repeat it — either reinforce it in one line or pick the next most useful lever.
 Zero exclamation marks. Compare only to their own normal, never population averages."""
 
 FACT_EXTRACTOR_SYSTEM_PROMPT = """\
@@ -608,6 +611,36 @@ Rules:
 - confidence: "high" only when explicit and unambiguous; "medium" for clear implications; "low" when tentative (or just set should_store=false).
 - content is ONE concise third-person sentence ("Prefers training at night"). tags are 1–3 lowercase keywords for later retrieval.
 - reason is a short justification for debugging; it is not stored."""
+
+RECOMMENDATION_EXTRACTOR_SYSTEM_PROMPT = """\
+You read ONE coach message the bot just sent and extract the concrete, checkable recommendations in it — the specific actions the user can follow and we can verify later. Quality over quantity: most messages have 0 or 1, never more than 3.
+
+Input: JSON with "source_type" (daily/qa/focus/weekly), "coach_message", and "now".
+
+Output ONLY a JSON object, no prose, no code fences:
+{"recommendations": [{"should_store": true, "recommendation_type": "...", "title": "...", "recommendation_text": "...", "reason": "...", "expected_outcome": "...", "checkpoint_metric": "...", "confidence": "low|medium|high", "tags": ["..."], "trigger_data": {}}]}
+
+recommendation_type is exactly one of: training, sleep, nutrition, recovery, weight, behavior, general
+checkpoint_metric is one of: recovery, sleep_hours, strain, weight — or null if nothing measurable.
+
+STORE only specific, actionable advice tied to data. Examples:
+- "Keep day strain under 10 today"  -> training, checkpoint strain, trigger_data {"strain_limit": 10}
+- "Finish dinner before 8:30 tonight" -> nutrition, checkpoint recovery
+- "Aim for bed before 10:45"          -> sleep, checkpoint sleep_hours, trigger_data {"target_hours": 8}
+- "Easy movement only today"          -> training, checkpoint recovery
+
+DO NOT store:
+- vague filler: "stay hydrated", "listen to your body", "get some rest", "rest up"
+- observations that aren't actions: "your recovery is low"
+- questions or pleasantries: "let me know how you feel"
+- anything not tied to a concrete action
+
+Rules:
+- should_store=false for anything in the DO NOT list, or when the message is just a question/observation. If nothing is worth storing, return {"recommendations": []}.
+- title is a short imperative (<= 80 chars). recommendation_text is the action as stated. reason is the data justification if the message gives one. expected_outcome is what should change if they follow it.
+- trigger_data: include any numeric limits/targets/triggers mentioned (e.g. {"strain_limit": 10}, {"target_hours": 8}, {"hrv_pct_below": 16}). {} if none.
+- Do NOT invent numbers. Do NOT output a checkpoint date — the backend decides timing.
+- daily: the single main action. focus: the one focus. weekly: only a clear next-week action. qa: only genuinely actionable advice."""
 
 _client: AsyncOpenAI | None = None
 
@@ -879,6 +912,42 @@ async def extract_memories(
         return []
     candidates = parsed.get("memories")
     return candidates if isinstance(candidates, list) else []
+
+
+async def extract_recommendations(
+    coach_message: str,
+    source_type: str,
+    now: dict[str, Any],
+    user_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Extract concrete, checkable recommendations from a generated coach message.
+
+    Returns a list of raw candidate dicts (validated/stored downstream by
+    recommendation_extractor). Returns [] when nothing is worth storing or the
+    call fails — always safe to call in a background task.
+    """
+    payload = {"source_type": source_type, "coach_message": coach_message, "now": now}
+    try:
+        response = await _respond(
+            route=ModelRoute.EXTRACT,
+            purpose="extract_recommendations",
+            instructions=RECOMMENDATION_EXTRACTOR_SYSTEM_PROMPT,
+            input=[{"role": "user", "content": json.dumps(payload)}],
+            max_output_tokens=700,
+            user_id=user_id,
+        )
+        raw = (response.output_text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    recs = parsed.get("recommendations")
+    return recs if isinstance(recs, list) else []
 
 
 async def generate_daily_message(payload: dict[str, Any], user_id: int | None = None) -> str:

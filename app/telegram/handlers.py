@@ -33,7 +33,14 @@ from app.services.baseline_engine import (
     should_gap_fill,
 )
 from app.services.coach_payload_builder import build_daily_payload, build_qa_payload, build_weekly_payload
-from app.services import memory_extractor, memory_retriever, memory_store
+from app.services import (
+    memory_extractor,
+    memory_retriever,
+    memory_store,
+    recommendation_checkpoint,
+    recommendation_extractor,
+    recommendation_ledger,
+)
 from app.services.chat_logger import log_outgoing
 from app.services.event_engine import EVENT_TYPES, apply_event_to_tags, enrich_closed_loops_with_meal_gap
 from app.services.observation_engine import POSITIVE_TAGS, build_closed_loops, recalculate_observations
@@ -194,6 +201,11 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         commitments = get_active_commitments(session, user.id, target_date)
         _notes = user.coach_notes if isinstance(user.coach_notes, dict) else {}
         structured_memories = memory_retriever.for_morning(session, user.id)
+        try:
+            recommendation_checkpoint.evaluate_due(session, user.id, target_date)
+        except Exception:
+            logger.exception("Recommendation checkpoint eval failed for user %s", user.id)
+        rec_context = recommendation_ledger.build_context(session, user.id, target_date, limit=5)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
@@ -201,6 +213,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             gap_fill_question=gap_fill, commitments=commitments or None,
             coach_notes=_notes or None,
             structured_memories=structured_memories or None,
+            recommendation_context=rec_context or None,
         )
 
         try:
@@ -219,19 +232,25 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if caution:
             message_text = f"{message_text}\n\n{caution}"
 
-        session.add(
-            CoachMessage(
-                user_id=user.id,
-                date=target_date,
-                message_type="daily",
-                summary_payload=payload,
-                ai_response=message_text,
-            )
+        coach_message = CoachMessage(
+            user_id=user.id,
+            date=target_date,
+            message_type="daily",
+            summary_payload=payload,
+            ai_response=message_text,
         )
+        session.add(coach_message)
         session.commit()
+        coach_message_id = coach_message.id
+        user_id = user.id
 
     await update.message.reply_text(message_text)
     log_outgoing(telegram_id, message_text, "ai_daily")
+    asyncio.create_task(
+        recommendation_extractor.run_for_message(
+            user_id, message_text, source_type="daily", source_message_id=coach_message_id
+        )
+    )
 
 
 async def checkin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -565,6 +584,43 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(text)
 
 
+async def recs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """View logged recommendations (Recommendation Ledger Phase 3B).
+
+    /recs           recent recommendations (any status)
+    /recs pending   still-pending recommendations / checkpoints
+    /recs checked   recently checked outcomes
+    """
+    if update.message is None or update.effective_user is None:
+        return
+    telegram_id = update.effective_user.id
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+
+        if sub == "pending":
+            rows = recommendation_ledger.get_pending(session, user.id, limit=20)
+            header = "Pending recommendations"
+        elif sub == "checked":
+            rows = [
+                r for r in recommendation_ledger.get_recent(session, user.id, limit=40)
+                if r.status in ("checked", "inconclusive")
+            ][:20]
+            header = "Recently checked"
+        else:
+            rows = recommendation_ledger.get_recent(session, user.id, limit=20)
+            header = "Recent recommendations"
+        text = recommendation_ledger.render_recommendation_list(rows, header)
+
+    # No parse_mode — recommendation text is AI-derived and may contain Markdown chars.
+    await update.message.reply_text(text)
+
+
 async def timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """View or set the user's IANA timezone. /timezone America/New_York"""
     if update.message is None or update.effective_user is None:
@@ -649,12 +705,16 @@ async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         target_date = now.date()
         snapshot = build_weekly_snapshot(session, user.id, target_date)
         focus_memories = memory_retriever.for_focus(session, user.id)
+        rec_context = recommendation_ledger.build_context(session, user.id, target_date, limit=3)
         payload = build_weekly_payload(
-            user, snapshot, now=now, structured_memories=focus_memories or None
+            user, snapshot, now=now,
+            structured_memories=focus_memories or None,
+            recommendation_context=rec_context or None,
         )
+        user_id = user.id
 
     try:
-        text = await generate_focus_response(payload, user_id=user.id)
+        text = await generate_focus_response(payload, user_id=user_id)
     except Exception as exc:
         logger.exception("/focus AI call failed for user %s", telegram_id)
         await send_admin_alert(f"/focus AI call failed for user {telegram_id}: {exc}")
@@ -663,6 +723,11 @@ async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(text)
     log_outgoing(telegram_id, text, "ai_focus")
+    asyncio.create_task(
+        recommendation_extractor.run_for_message(
+            user_id, text, source_type="focus", source_message_id=None
+        )
+    )
 
 
 async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1087,9 +1152,11 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         target_date = now.date()
         qa_ctx = build_qa_context(session, user.id, target_date, user=user)
         relevant_memories = memory_retriever.for_qa(session, user.id, question)
+        rec_context = recommendation_ledger.build_context(session, user.id, target_date, limit=5)
         payload = build_qa_payload(
             question, qa_ctx, now=now_block(user, now),
             structured_memories=relevant_memories or None,
+            recommendation_context=rec_context or None,
         )
         user_id = user.id
 
@@ -1149,6 +1216,12 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # memory extraction (user_memories) during Phase 2A — neither blocks the reply.
     asyncio.create_task(_update_coach_notes(user_id, question, response_text))
     asyncio.create_task(_run_memory_extraction(user_id, question, response_text))
+    # Background: extract any checkable advice from the Q&A answer into the ledger.
+    asyncio.create_task(
+        recommendation_extractor.run_for_message(
+            user_id, response_text, source_type="qa", source_message_id=msg_id
+        )
+    )
 
 
 async def _run_memory_extraction(user_id: int, user_message: str, ai_response: str) -> None:
@@ -1211,6 +1284,7 @@ Just type it — "had pizza at 9pm", "3 drinks tonight", "stressful day", "going
 /weekly — this week vs your 30-day baseline (asks how the week felt first)
 /manual — your baselines, patterns, and what helps vs hurts
 /memory — what I've learned about you (/memory delete <id> to fix it)
+/recs — recommendations I've made and how they turned out
 /history — last 7 daily messages
 /chatlog — full conversation history
 

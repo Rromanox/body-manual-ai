@@ -58,6 +58,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("weekly", handlers.weekly))
     application.add_handler(CommandHandler("manual", handlers.manual))
     application.add_handler(CommandHandler("memory", handlers.memory_command))
+    application.add_handler(CommandHandler("recs", handlers.recs_command))
     application.add_handler(CommandHandler("goal", handlers.goal))
     application.add_handler(CommandHandler("goalweight", handlers.goalweight))
     application.add_handler(CommandHandler("timezone", handlers.timezone))

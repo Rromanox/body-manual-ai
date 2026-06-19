@@ -28,6 +28,7 @@ def build_daily_payload(
     commitments: list[dict] | None = None,
     coach_notes: dict | None = None,
     structured_memories: list[dict[str, Any]] | None = None,
+    recommendation_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -176,6 +177,10 @@ def build_daily_payload(
     if structured_memories:
         payload["memory_context"] = structured_memories
 
+    # Phase 3B: recent recommendations + checked outcomes (closed-loop).
+    if recommendation_context:
+        payload["recommendation_context"] = recommendation_context
+
     return payload
 
 
@@ -184,6 +189,7 @@ def build_weekly_payload(
     snapshot: WeeklySnapshot,
     now: datetime | None = None,
     structured_memories: list[dict[str, Any]] | None = None,
+    recommendation_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "now": now_block(user, now),
@@ -214,6 +220,9 @@ def build_weekly_payload(
     # Phase 2B: high-confidence memories for weekly / focus framing.
     if structured_memories:
         payload["memory_context"] = structured_memories
+    # Phase 3B: recent recommendations (used by /focus).
+    if recommendation_context:
+        payload["recommendation_context"] = recommendation_context
     return payload
 
 
@@ -222,6 +231,7 @@ def build_qa_payload(
     context: QAContext,
     now: dict[str, Any] | None = None,
     structured_memories: list[dict[str, Any]] | None = None,
+    recommendation_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     def _r(v: float | None) -> float | None:
         return round(v, 1) if v is not None else None
@@ -265,6 +275,9 @@ def build_qa_payload(
     # references it yet — activation is Phase 2B.
     if structured_memories:
         payload["memory_context"] = structured_memories
+    # Phase 3B: recent recommendations + checked outcomes.
+    if recommendation_context:
+        payload["recommendation_context"] = recommendation_context
     return payload
 
 

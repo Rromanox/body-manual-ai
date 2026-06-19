@@ -282,8 +282,15 @@ async def _do_send_for_user(user_id: int) -> None:
         from app.services.commitment_engine import get_active_commitments
         commitments = get_active_commitments(session, user.id, target_date)
         _notes = user.coach_notes if isinstance(user.coach_notes, dict) else {}
-        from app.services import memory_retriever
+        from app.services import memory_retriever, recommendation_checkpoint, recommendation_ledger
         structured_memories = memory_retriever.for_morning(session, user.id)
+        # Evaluate any due recommendation checkpoints first so today's message can
+        # close the loop. Crash-proof — never block the morning message.
+        try:
+            recommendation_checkpoint.evaluate_due(session, user.id, target_date)
+        except Exception:
+            logger.exception("Recommendation checkpoint eval failed for user %s", user_id)
+        rec_context = recommendation_ledger.build_context(session, user.id, target_date, limit=5)
         payload = build_daily_payload(
             user, snapshot, yesterday_tags=yesterday_tags,
             today_metric_row=today_row, checkin_streak=streak, now=now,
@@ -291,6 +298,7 @@ async def _do_send_for_user(user_id: int) -> None:
             gap_fill_question=gap_fill, commitments=commitments or None,
             coach_notes=_notes or None,
             structured_memories=structured_memories or None,
+            recommendation_context=rec_context or None,
         )
 
         try:
@@ -306,16 +314,16 @@ async def _do_send_for_user(user_id: int) -> None:
         if caution:
             message_text = f"{message_text}\n\n{caution}"
 
-        session.add(
-            CoachMessage(
-                user_id=user.id,
-                date=target_date,
-                message_type="daily",
-                summary_payload=payload,
-                ai_response=message_text,
-            )
+        coach_message = CoachMessage(
+            user_id=user.id,
+            date=target_date,
+            message_type="daily",
+            summary_payload=payload,
+            ai_response=message_text,
         )
+        session.add(coach_message)
         session.commit()
+        coach_message_id = coach_message.id
         telegram_id = user.telegram_id
 
     await bot.send_message(chat_id=telegram_id, text=message_text)
@@ -324,4 +332,12 @@ async def _do_send_for_user(user_id: int) -> None:
         chat_id=telegram_id,
         text="How was yesterday? Tap any that apply:",
         reply_markup=checkin_keyboard(set()),
+    )
+
+    # Background: extract checkable recommendations from the message we just sent.
+    from app.services import recommendation_extractor
+    asyncio.create_task(
+        recommendation_extractor.run_for_message(
+            user_id, message_text, source_type="daily", source_message_id=coach_message_id
+        )
     )

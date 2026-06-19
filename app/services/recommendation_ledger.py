@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -261,6 +261,49 @@ def get_recent(
         stmt = stmt.where(RecommendationLedger.local_date >= since)
     stmt = stmt.order_by(RecommendationLedger.id.desc())
     return list(session.scalars(stmt).all())[:limit]
+
+
+def build_context(
+    session: Session,
+    user_id: int,
+    today: date,
+    *,
+    since_days: int = 7,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Serialized recent recommendations (pending + recently checked) for payloads.
+
+    Capped and newest-first. Empty list when there's nothing — callers omit the
+    payload key entirely in that case.
+    """
+    since = today - timedelta(days=since_days)
+    return [serialize(r) for r in get_recent(session, user_id, since=since, limit=limit)]
+
+
+_STATUS_LABELS = {
+    "pending": "Pending",
+    "checked": "Checked",
+    "inconclusive": "Inconclusive",
+    "cancelled": "Cancelled",
+}
+
+
+def render_recommendation_list(recs: list[RecommendationLedger], header: str) -> str:
+    """Plain-text Telegram rendering for /recs. Pure function (no Markdown — text
+    is AI-derived and would break the parser)."""
+    if not recs:
+        return f"{header}\n\nNothing yet — I'll log advice as I give it."
+    lines = [header, ""]
+    for r in recs:
+        suffix = ""
+        if r.status == "checked" and r.outcome_status not in (None, "unknown"):
+            suffix = f" — {r.outcome_status}"
+        elif r.status != "pending":
+            suffix = f" — {_STATUS_LABELS.get(r.status, r.status).lower()}"
+        lines.append(f"[{r.id}] ({r.local_date}) {r.title}{suffix}")
+        if r.status == "checked" and r.outcome_summary:
+            lines.append(f"    {r.outcome_summary}")
+    return "\n".join(lines)
 
 
 def serialize(rec: RecommendationLedger) -> dict[str, Any]:
