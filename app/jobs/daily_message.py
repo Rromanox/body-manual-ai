@@ -215,7 +215,7 @@ async def _do_send_for_user(user_id: int) -> None:
         )
 
         try:
-            message_text = await generate_daily_message(payload)
+            message_text = await generate_daily_message(payload, user_id=user_id)
         except Exception as exc:
             logger.exception("Morning AI call failed for user %s", user_id)
             await send_admin_alert(f"Morning AI call failed for user {user_id}: {exc}")

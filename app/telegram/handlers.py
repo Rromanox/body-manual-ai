@@ -201,7 +201,7 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
         try:
-            message_text = await generate_daily_message(payload)
+            message_text = await generate_daily_message(payload, user_id=user.id)
         except Exception as exc:
             logger.exception("/today AI call failed for user %s", user.id)
             await send_admin_alert(f"/today AI call failed for user {user.id}: {exc}")
@@ -597,7 +597,7 @@ async def focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         payload = build_weekly_payload(user, snapshot, now=now)
 
     try:
-        text = await generate_focus_response(payload)
+        text = await generate_focus_response(payload, user_id=user.id)
     except Exception as exc:
         logger.exception("/focus AI call failed for user %s", telegram_id)
         await send_admin_alert(f"/focus AI call failed for user {telegram_id}: {exc}")
@@ -981,7 +981,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         _wr_payload["user_reflection"] = question
         await context.bot.send_chat_action(chat_id=update.message.chat_id, action=ChatAction.TYPING)
         try:
-            _wr_msg = await generate_weekly_message(_wr_payload)
+            _wr_msg = await generate_weekly_message(_wr_payload, user_id=_wr_user.id)
         except Exception as exc:
             logger.exception("Weekly reflection AI call failed for user %s", _wr_user.id)
             await send_admin_alert(f"Weekly reflection failed for user {_wr_user.id}: {exc}")
@@ -1005,7 +1005,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if user is not None:
         now = get_user_now(user)
         try:
-            extraction = await classify_and_extract(question, now_block(user, now))
+            extraction = await classify_and_extract(question, now_block(user, now), user_id=user.id)
         except Exception:
             logger.exception("Event extraction failed for user %s", user.id)
             extraction = {"is_log": False, "events": []}
@@ -1066,7 +1066,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ).first()
 
     try:
-        response_text = await generate_qa_response(payload, history=history)
+        response_text = await generate_qa_response(payload, history=history, user_id=user_id)
     except Exception as exc:
         logger.exception("Q&A call failed for user %s", user_id)
         await send_admin_alert(f"Q&A call failed for user {user_id}: {exc}")
@@ -1096,7 +1096,7 @@ async def _update_coach_notes(user_id: int, user_message: str, ai_response: str)
                 return
             existing = user.coach_notes if isinstance(user.coach_notes, dict) else {}
 
-        new_facts = await extract_user_facts(user_message, ai_response, existing)
+        new_facts = await extract_user_facts(user_message, ai_response, existing, user_id=user_id)
         if not new_facts:
             return
 

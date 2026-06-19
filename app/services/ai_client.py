@@ -8,11 +8,16 @@ from env config (OPENAI_MODEL), never hard-coded here.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.services.model_router import ModelRoute, get_model_for_route
+
+logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 60.0
 # Reasoning models spend part of this budget thinking before the visible
@@ -572,12 +577,110 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-async def generate_weekly_message(payload: dict[str, Any]) -> str:
-    response = await _get_client().responses.create(
-        model=settings.openai_model,
+def _model_chain(route: ModelRoute) -> list[str]:
+    """Ordered, de-duplicated models to try for a route.
+
+    Under the default config (every route resolves to the same model) each chain
+    collapses to a single model, so there is exactly one API call and behavior is
+    identical to before routing existed. Fallbacks only engage when a distinct
+    premium model is configured for COACH/DEEP and it fails — they degrade toward
+    the known-good global model rather than hiding the failure.
+    """
+    chain = [get_model_for_route(route)]
+    if route is ModelRoute.DEEP:
+        coach_model = get_model_for_route(ModelRoute.COACH)
+        if coach_model not in chain:
+            chain.append(coach_model)
+    if route in (ModelRoute.COACH, ModelRoute.DEEP):
+        if settings.openai_model not in chain:
+            chain.append(settings.openai_model)
+    return chain
+
+
+def _log_ai_call(
+    *,
+    route: ModelRoute,
+    model: str,
+    purpose: str,
+    user_id: int | None,
+    response: Any | None,
+    latency_s: float,
+    ok: bool,
+    error: Exception | None,
+) -> None:
+    latency_ms = int(latency_s * 1000)
+    if ok:
+        usage = getattr(response, "usage", None)
+        in_tok = getattr(usage, "input_tokens", None)
+        out_tok = getattr(usage, "output_tokens", None)
+        tot_tok = getattr(usage, "total_tokens", None)
+        logger.info(
+            "ai_call route=%s model=%s purpose=%s user_id=%s ok=True latency_ms=%d "
+            "input_tokens=%s output_tokens=%s total_tokens=%s",
+            route.value, model, purpose, user_id, latency_ms, in_tok, out_tok, tot_tok,
+        )
+    else:
+        logger.warning(
+            "ai_call route=%s model=%s purpose=%s user_id=%s ok=False latency_ms=%d error=%s: %s",
+            route.value, model, purpose, user_id, latency_ms,
+            type(error).__name__ if error else "Unknown", error,
+        )
+
+
+async def _respond(
+    *,
+    route: ModelRoute,
+    purpose: str,
+    instructions: str,
+    input: Any,
+    max_output_tokens: int,
+    user_id: int | None = None,
+):
+    """Single choke point for every OpenAI Responses API call.
+
+    Resolves the model from the route, logs route/model/usage/latency, and on
+    failure tries the route's fallback chain (a no-op under default config). If
+    every model in the chain fails, the last exception is re-raised so existing
+    error handling and admin alerts still fire — failures are never swallowed.
+    """
+    chain = _model_chain(route)
+    last_exc: Exception | None = None
+    for i, model in enumerate(chain):
+        start = time.monotonic()
+        try:
+            response = await _get_client().responses.create(
+                model=model,
+                instructions=instructions,
+                input=input,
+                max_output_tokens=max_output_tokens,
+            )
+            _log_ai_call(
+                route=route, model=model, purpose=purpose, user_id=user_id,
+                response=response, latency_s=time.monotonic() - start, ok=True, error=None,
+            )
+            return response
+        except Exception as exc:  # noqa: BLE001 — logged + re-raised below
+            last_exc = exc
+            _log_ai_call(
+                route=route, model=model, purpose=purpose, user_id=user_id,
+                response=None, latency_s=time.monotonic() - start, ok=False, error=exc,
+            )
+            if i < len(chain) - 1:
+                logger.warning(
+                    "AI route=%s model=%s failed (%s) — falling back to %s",
+                    route.value, model, type(exc).__name__, chain[i + 1],
+                )
+    raise last_exc  # type: ignore[misc]
+
+
+async def generate_weekly_message(payload: dict[str, Any], user_id: int | None = None) -> str:
+    response = await _respond(
+        route=ModelRoute.DEEP,
+        purpose="weekly_message",
         instructions=WEEKLY_SYSTEM_PROMPT,
         input=[{"role": "user", "content": json.dumps(payload)}],
         max_output_tokens=MAX_OUTPUT_TOKENS,
+        user_id=user_id,
     )
     text = (response.output_text or "").strip()
     if not text:
@@ -588,16 +691,19 @@ async def generate_weekly_message(payload: dict[str, Any]) -> str:
 async def generate_qa_response(
     payload: dict[str, Any],
     history: list[dict[str, str]] | None = None,
+    user_id: int | None = None,
 ) -> str:
     # Few-shots first (tone examples), then real conversation history, then current question
     input_turns: list[dict[str, str]] = list(QA_FEW_SHOTS)
     input_turns.extend(history or [])
     input_turns.append({"role": "user", "content": json.dumps(payload)})
-    response = await _get_client().responses.create(
-        model=settings.openai_model,
+    response = await _respond(
+        route=ModelRoute.COACH,
+        purpose="qa_response",
         instructions=QA_SYSTEM_PROMPT,
         input=input_turns,
         max_output_tokens=MAX_QA_OUTPUT_TOKENS,
+        user_id=user_id,
     )
     text = (response.output_text or "").strip()
     if not text:
@@ -605,12 +711,14 @@ async def generate_qa_response(
     return text
 
 
-async def generate_focus_response(payload: dict[str, Any]) -> str:
-    response = await _get_client().responses.create(
-        model=settings.openai_model,
+async def generate_focus_response(payload: dict[str, Any], user_id: int | None = None) -> str:
+    response = await _respond(
+        route=ModelRoute.COACH,
+        purpose="focus_response",
         instructions=FOCUS_SYSTEM_PROMPT,
         input=[{"role": "user", "content": json.dumps(payload)}],
         max_output_tokens=300,
+        user_id=user_id,
     )
     text = (response.output_text or "").strip()
     if not text:
@@ -618,18 +726,22 @@ async def generate_focus_response(payload: dict[str, Any]) -> str:
     return text
 
 
-async def classify_and_extract(text: str, now: dict[str, Any]) -> dict[str, Any]:
+async def classify_and_extract(
+    text: str, now: dict[str, Any], user_id: int | None = None
+) -> dict[str, Any]:
     """Separate, cheap call: is this message a behavior log, and if so what events?
 
     Never the narration call — this only turns words into rows. The backend
     validates/parses the result; a malformed response safely falls back to
     "not a log" so the message flows through the normal Q&A path instead.
     """
-    response = await _get_client().responses.create(
-        model=settings.openai_model,
+    response = await _respond(
+        route=ModelRoute.FAST,
+        purpose="classify_and_extract",
         instructions=EVENT_EXTRACTOR_SYSTEM_PROMPT,
         input=[{"role": "user", "content": json.dumps({"message": text, "now": now})}],
         max_output_tokens=400,
+        user_id=user_id,
     )
     raw = (response.output_text or "").strip()
     if raw.startswith("```"):
@@ -649,6 +761,7 @@ async def extract_user_facts(
     user_message: str,
     ai_response: str,
     existing_notes: dict[str, Any],
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """Extract persistent personal facts from a Q&A exchange.
 
@@ -661,11 +774,13 @@ async def extract_user_facts(
         "existing_notes": existing_notes,
     }
     try:
-        response = await _get_client().responses.create(
-            model=settings.openai_model,
+        response = await _respond(
+            route=ModelRoute.EXTRACT,
+            purpose="extract_user_facts",
             instructions=FACT_EXTRACTOR_SYSTEM_PROMPT,
             input=[{"role": "user", "content": json.dumps(payload)}],
             max_output_tokens=300,
+            user_id=user_id,
         )
         raw = (response.output_text or "").strip()
         if raw.startswith("```"):
@@ -678,12 +793,14 @@ async def extract_user_facts(
         return {}
 
 
-async def generate_daily_message(payload: dict[str, Any]) -> str:
-    response = await _get_client().responses.create(
-        model=settings.openai_model,
+async def generate_daily_message(payload: dict[str, Any], user_id: int | None = None) -> str:
+    response = await _respond(
+        route=ModelRoute.COACH,
+        purpose="daily_message",
         instructions=SYSTEM_PROMPT,
         input=[*FEW_SHOTS, {"role": "user", "content": json.dumps(payload)}],
         max_output_tokens=MAX_OUTPUT_TOKENS,
+        user_id=user_id,
     )
     text = (response.output_text or "").strip()
     if not text:
