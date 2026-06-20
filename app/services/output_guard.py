@@ -80,3 +80,42 @@ def projection_date_is_consistent(text: str, projection: dict[str, Any] | None) 
         return True  # stated weeks but no date -> can't be wrong about a date
     # Consistent if ANY mentioned date is within tolerance of the backend date.
     return any(abs((d - est_date).days) <= _DATE_TOLERANCE_DAYS for d in mentioned)
+
+
+# --- weight date/value validation -------------------------------------------
+
+_WEIGHT_TOLERANCE_LBS = 0.3
+# "June 17: 202.4 lbs" / "June 17 - 200.4" / "Jun 17 200 lbs"
+_DATE_WEIGHT_RE = re.compile(
+    r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*[:\-–—]?\s*(\d{2,3}(?:\.\d)?)\s*(?:lbs?|pounds?)\b",
+    re.IGNORECASE,
+)
+
+
+def weight_data_is_consistent(text: str, audit: dict[str, Any] | None) -> bool:
+    """False when the text states a date->weight pair that contradicts a known
+    stored reading (e.g. "June 17: 202.4" when June 17 was 200.4). Only checks
+    dates we actually have, so legitimate mentions of other dates don't trip it."""
+    if not audit:
+        return True
+    known: dict[str, float] = audit.get("known_weights") or {}
+    if not known:
+        return True
+    ref_year = 2000
+    cur = audit.get("current_date")
+    if cur:
+        try:
+            ref_year = date.fromisoformat(cur).year
+        except (ValueError, TypeError):
+            pass
+    for mon, day, weight in _DATE_WEIGHT_RE.findall(text or ""):
+        month = _MONTHS.get(mon.lower())
+        if month is None:
+            continue
+        try:
+            iso = str(date(ref_year, month, int(day)))
+        except ValueError:
+            continue
+        if iso in known and abs(float(weight) - known[iso]) > _WEIGHT_TOLERANCE_LBS:
+            return False
+    return True

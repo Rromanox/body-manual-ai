@@ -27,6 +27,8 @@ def project_weight(
     today: date,
     *,
     trend_days: int | None = None,
+    rate_window_days: int | None = None,
+    rate_method: str | None = None,
 ) -> dict[str, Any] | None:
     """Project when a weight goal is reached.
 
@@ -68,18 +70,27 @@ def project_weight(
     exact_weeks = pounds_remaining / loss_rate
     estimated_days = round(exact_weeks * 7)
     estimated_date = today + timedelta(days=estimated_days)
-    return {
+    result = {
         "status": "projected",
         "current_lbs": current_lbs,
         "goal_lbs": goal_lbs,
         "pounds_remaining": pounds_remaining,
         "rate_lbs_per_week": round(loss_rate, 2),
+        "selected_rate_lbs_per_week": round(loss_rate, 2),
         "direction": "loss",
         "estimated_weeks": round(exact_weeks, 1),
         "estimated_days": estimated_days,
         "estimated_date": str(estimated_date),
-        "short_term": bool(trend_days is not None and trend_days < _SHORT_TERM_DAYS),
+        "short_term": bool(
+            (trend_days is not None and trend_days < _SHORT_TERM_DAYS)
+            or (rate_window_days is not None and rate_window_days < _SHORT_TERM_DAYS)
+        ),
     }
+    if rate_window_days is not None:
+        result["selected_rate_window_days"] = rate_window_days
+    if rate_method is not None:
+        result["selected_rate_method"] = rate_method
+    return result
 
 
 def stall_projection(current_lbs: float, goal_lbs: float) -> dict[str, Any]:
@@ -132,10 +143,12 @@ def projection_for_question(
     today: date,
     *,
     trend_days: int | None = None,
+    rate_window_days: int | None = None,
+    rate_method: str | None = None,
 ) -> dict[str, Any] | None:
     """Question-aware projection: honor a target weight named in the question and
     any hypothetical (stall / explicit rate). Falls back to the user's goal weight
-    and recent trend rate."""
+    and selected trend rate (whose window/method are echoed for transparency)."""
     if current_lbs is None:
         return None
     target = parse_target_weight(question)
@@ -149,8 +162,13 @@ def projection_for_question(
         if hypo["type"] == "stall":
             return stall_projection(current_lbs, target)
         if hypo["type"] == "rate":
-            return project_weight(current_lbs, target, -hypo["rate"], today)
-    return project_weight(current_lbs, target, weekly_rate_lbs, today, trend_days=trend_days)
+            return project_weight(
+                current_lbs, target, -hypo["rate"], today, rate_method="user_hypothetical"
+            )
+    return project_weight(
+        current_lbs, target, weekly_rate_lbs, today,
+        trend_days=trend_days, rate_window_days=rate_window_days, rate_method=rate_method,
+    )
 
 
 def format_projection(p: dict[str, Any] | None) -> str:

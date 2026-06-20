@@ -29,6 +29,24 @@ def is_correction(message: str) -> bool:
     return bool(_CORRECTION_RE.search(message or ""))
 
 
+# Asking to audit the data/rate behind a number. Routes to Q&A (with the
+# deterministic weight_trend_audit in the payload), never to logging.
+_DATA_AUDIT_RE = re.compile(
+    r"\b("
+    r"average weight ?loss rate|is that my (average|real|actual) rate|"
+    r"check the (math and )?data|where did (that|the) (rate|number|data) come from|"
+    r"show me the (data|numbers|weights)|what weights did you use|"
+    r"what (data|numbers) did you use|how did you (calculate|get|figure|work)|"
+    r"\d+[- ]day (weight )?trend|weight trend|what'?s my (weight )?trend"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_data_audit(message: str) -> bool:
+    return bool(_DATA_AUDIT_RE.search(message or ""))
+
+
 # "remember I'm taking X" / "I'm taking X" / "I'm on X" / "I take X" — present
 # status, not a future commitment. Captures the trailing phrase.
 _STATUS_RE = re.compile(

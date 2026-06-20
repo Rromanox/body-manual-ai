@@ -271,9 +271,14 @@ def build_qa_payload(
         payload["workout_effect"] = context.workout_effect
     if context.weight_velocity:
         payload["weight_velocity"] = context.weight_velocity
+    # Deterministic weight-trend audit (per-window trends + selected rate + the
+    # exact dated rows). The AI must quote these, never reconstruct from memory.
+    if context.weight_trend_audit:
+        payload["weight_trend_audit"] = context.weight_trend_audit
+
     # Question-aware weight projection: honor a target weight or hypothetical
     # ("when do I hit 185", "if my weight stalls") named in the question. Falls
-    # back to the default goal projection.
+    # back to the default goal projection, tagged with the selected rate's source.
     if context.weight_current_lbs is not None:
         from app.services.weight_projection import projection_for_question
         proj_today = date.today()
@@ -282,9 +287,11 @@ def build_qa_payload(
                 proj_today = date.fromisoformat(now["date"])
             except (ValueError, TypeError):
                 pass
+        _sel = (context.weight_trend_audit or {}).get("selected") or {}
         proj = projection_for_question(
             question, context.weight_current_lbs, context.goal_weight_lbs,
-            context.weight_weekly_rate_lbs, proj_today, trend_days=16,
+            context.weight_weekly_rate_lbs, proj_today,
+            rate_window_days=_sel.get("window_days"), rate_method=_sel.get("method"),
         )
         if proj:
             payload["weight_projection"] = proj

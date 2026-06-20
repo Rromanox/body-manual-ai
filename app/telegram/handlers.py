@@ -45,6 +45,7 @@ from app.services import (
     recommendation_followthrough,
     recommendation_ledger,
     weight_projection,
+    weight_trends,
 )
 from app.services.chat_logger import log_outgoing
 from app.services.event_engine import EVENT_TYPES, apply_event_to_tags, enrich_closed_loops_with_meal_gap
@@ -1217,14 +1218,16 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         log_outgoing(telegram_id, _wr_msg, "ai_weekly")
         return
 
-    # A correction/objection ("that's wrong", "math ain't mathing", "wym") must
-    # never be swallowed by the log/reminder detectors — let it continue to Q&A
-    # so the coach recomputes.
+    # A correction/objection ("that's wrong", "math ain't mathing") or a data-audit
+    # request ("check the math and data", "where did that rate come from") must
+    # never be swallowed by the log/reminder detectors — continue to Q&A so the
+    # coach recomputes / quotes the deterministic audit.
     is_correction = message_intent.is_correction(question)
+    route_to_qa = is_correction or message_intent.is_data_audit(question)
 
     # Current-status memory ("remember I'm taking retatrutide") — store as a fact,
     # never a commitment or event. Skipped for corrections.
-    if not is_correction:
+    if not route_to_qa:
         status_phrase = message_intent.detect_status_memory(question)
         if status_phrase:
             with SessionLocal() as session:
@@ -1250,7 +1253,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Stable training constraint/preference ("I can only train mornings before 7am")
     # — captured as memory BEFORE recommendation follow-through so it isn't misread
     # as a follow-through reply.
-    if not is_correction:
+    if not route_to_qa:
         constraint = message_intent.detect_constraint_memory(question)
         if constraint:
             _cm_uid = None
@@ -1282,7 +1285,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         _reta_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
         _reta_uid = _reta_user.id if _reta_user else None
         _reta_today = get_user_today(_reta_user) if _reta_user else None
-    if _reta_user is not None and not is_correction:
+    if _reta_user is not None and not route_to_qa:
         reta_intent = health_reminder.detect_reta_message(question, _reta_today)
         if reta_intent is not None:
             with SessionLocal() as session:
@@ -1314,7 +1317,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 r for r in recommendation_ledger.get_pending(session, _ft_user.id, limit=10)
                 if (_ft_today - r.local_date).days <= 3
             ]
-    if ft_pending and not is_correction and recommendation_followthrough.looks_like_followthrough(question):
+    if ft_pending and not route_to_qa and recommendation_followthrough.looks_like_followthrough(question):
         decision = recommendation_followthrough.match_deterministic(question, ft_pending)
         if decision is None:
             decision = await recommendation_followthrough.detect_with_ai(question, ft_pending, ft_now, ft_user_id)
@@ -1334,7 +1337,7 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     with SessionLocal() as session:
         user = session.scalar(select(User).where(User.telegram_id == telegram_id))
-    if user is not None and not is_correction:
+    if user is not None and not route_to_qa:
         now = get_user_now(user)
         try:
             extraction = await classify_and_extract(question, now_block(user, now), user_id=user.id)
@@ -1411,22 +1414,26 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("I hit a snag answering that — try again in a moment.")
         return
 
-    # Output guard: block unresolved placeholders ("in about time", "{date}") AND
-    # projection dates that contradict the backend's estimated_date. Regenerate
-    # once; if still bad, fall back to the deterministic projection text.
+    # Output guard: block unresolved placeholders ("in about time"), projection
+    # dates that contradict the backend's estimated_date, AND weight rows that
+    # contradict the stored readings. Regenerate once; if still bad, fall back to
+    # deterministic projection / trend-audit text.
     _wp = payload.get("weight_projection")
+    _audit = payload.get("weight_trend_audit")
 
     def _output_bad(text: str) -> bool:
         return (
             output_guard.has_unresolved_placeholder(text)
             or not output_guard.projection_date_is_consistent(text, _wp)
+            or not output_guard.weight_data_is_consistent(text, _audit)
         )
 
     if _output_bad(response_text):
         logger.warning("Q&A output guard tripped for user %s — regenerating", user_id)
         repair = (
-            "Your previous answer had broken or inconsistent text. Rewrite it cleanly using the "
-            "exact numbers in the payload; never output placeholders like 'in about time' or '{date}'."
+            "Your previous answer had broken or inconsistent text, a wrong date, or weights that "
+            "don't match the payload. Rewrite it using ONLY the exact numbers in weight_projection "
+            "and weight_trend_audit; never invent or re-date a weight, and never output placeholders."
         )
         if _wp and _wp.get("status") == "projected":
             repair += (
@@ -1440,10 +1447,12 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         except Exception:
             logger.exception("Q&A repair regeneration failed for user %s", user_id)
         if _output_bad(response_text):
-            response_text = (
-                weight_projection.format_projection(_wp) if _wp
-                else "Let me redo that — could you ask again?"
-            )
+            if _wp:
+                response_text = weight_projection.format_projection(_wp)
+            elif _audit:
+                response_text = weight_trends.format_audit(_audit)
+            else:
+                response_text = "Let me redo that — could you ask again?"
 
     if msg_id:
         with SessionLocal() as session:

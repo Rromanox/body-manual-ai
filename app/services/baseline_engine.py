@@ -861,6 +861,7 @@ class QAContext:
     weight_projection: dict | None = None  # deterministic projection to goal weight
     weight_current_lbs: float | None = None      # raw current weight (for question-aware projection)
     weight_weekly_rate_lbs: float | None = None  # raw signed weekly trend (negative = losing)
+    weight_trend_audit: dict | None = None       # per-window trends + selected rate + known rows
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -995,21 +996,38 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
     raw_notes = getattr(user, "coach_notes", None) if user else None
     coach_notes = raw_notes if isinstance(raw_notes, dict) and raw_notes else None
 
-    # Deterministic weight-goal projection (backend computes; the AI narrates it).
-    # Raw current weight + signed weekly rate are also exposed so the payload
-    # builder can re-project for a target/hypothetical named in the question.
+    # Deterministic weight-trend audit + projection (backend computes; AI narrates).
+    # The audit exposes per-window trends from the ACTUAL dated readings and the
+    # selected rate (window + method), so the AI can't reconstruct or mis-date
+    # weights. Raw current weight + selected signed rate feed question-aware
+    # projection in the payload builder.
     weight_projection = None
     weight_current_lbs = None
     weight_weekly_rate_lbs = None
+    weight_trend_audit = None
     goal_weight = getattr(user, "goal_weight_lbs", None) if user else None
-    wt = _build_weight_trend(session, user_id, target_date)
-    if wt is not None and wt.current_weight_lbs is not None:
-        weight_current_lbs = wt.current_weight_lbs
-        weight_weekly_rate_lbs = wt.weekly_trend_lbs
+    from app.services import weight_trends
+    from app.services.weight_projection import project_weight
+    _wt_cutoff = target_date - timedelta(days=35)
+    _wt_rows = session.scalars(
+        select(DailyMetric).where(
+            DailyMetric.user_id == user_id,
+            DailyMetric.date >= _wt_cutoff,
+            DailyMetric.date <= target_date,
+            DailyMetric.weight.is_not(None),
+        )
+    ).all()
+    _weights_lbs = [(r.date, r.weight * 2.20462) for r in _wt_rows]
+    weight_trend_audit = weight_trends.build_weight_trend_audit(_weights_lbs, target_date)
+    if weight_trend_audit is not None:
+        weight_current_lbs = weight_trend_audit["current_weight"]
+        _sel = weight_trend_audit.get("selected")
+        weight_weekly_rate_lbs = _sel["rate_lbs_per_week"] if _sel else None
         if goal_weight is not None:
-            from app.services.weight_projection import project_weight
             weight_projection = project_weight(
-                wt.current_weight_lbs, goal_weight, wt.weekly_trend_lbs, target_date, trend_days=16
+                weight_current_lbs, goal_weight, weight_weekly_rate_lbs, target_date,
+                rate_window_days=(_sel or {}).get("window_days"),
+                rate_method=(_sel or {}).get("method"),
             )
 
     data_days = _data_days_available(session, user_id, target_date)
@@ -1037,6 +1055,7 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         weight_projection=weight_projection,
         weight_current_lbs=weight_current_lbs,
         weight_weekly_rate_lbs=weight_weekly_rate_lbs,
+        weight_trend_audit=weight_trend_audit,
     )
 
 
