@@ -127,6 +127,14 @@ def build_weight_trend_audit(
     }
 
 
+def _fmt_date(iso: str) -> str:
+    try:
+        d = date.fromisoformat(iso)
+        return f"{d.strftime('%b')} {d.day}"
+    except (ValueError, TypeError):
+        return iso
+
+
 def format_audit(audit: dict[str, Any] | None) -> str:
     """Deterministic plain-text summary — used as the guard fallback."""
     if not audit:
@@ -135,7 +143,7 @@ def format_audit(audit: dict[str, Any] | None) -> str:
     lines = []
     if sel:
         lines.append(
-            f"Selected rate: {sel['rate_lbs_per_week']} lb/week "
+            f"Selected rate: {abs(sel['rate_lbs_per_week'])} lb/week "
             f"({sel['method'].replace('_', ' ')} over the last {sel['window_days']} days, "
             f"{sel['data_points_used']} readings)."
         )
@@ -149,3 +157,56 @@ def format_audit(audit: dict[str, Any] | None) -> str:
             f"{w['days_elapsed']} days = {w['lbs_per_week']} lb/week."
         )
     return "\n".join(lines) if lines else "Not enough weight data to compute a trend."
+
+
+def format_weight_audit_answer(
+    audit: dict[str, Any] | None,
+    question_text: str | None = None,
+    projection: dict[str, Any] | None = None,
+) -> str:
+    """Full user-facing answer for a weight data-audit question, built ENTIRELY
+    from backend data — no AI. Lists only actual stored readings (never invented
+    or re-dated), names the selected rate's window/method, shows the per-window
+    math, and adds NO generic advice."""
+    if not audit:
+        return "I don't have enough weight readings yet to break down your trend."
+
+    lines: list[str] = []
+    sel = audit.get("selected")
+    if sel:
+        rate = sel["rate_lbs_per_week"]
+        verb = "losing" if rate < 0 else ("gaining" if rate > 0 else "holding at")
+        lines.append(
+            f"That {abs(rate)} lb/week is the backend {sel['method'].replace('_', ' ')} trend over the "
+            f"last {sel['window_days']} days ({sel['data_points_used']} readings) - you're {verb} weight. "
+            f"It is NOT a simple 7-day average, and I don't use an average as a starting weight."
+        )
+
+    # Exact readings — only what's actually stored.
+    known = audit.get("known_weights") or {}
+    if known:
+        lines.append("")
+        lines.append("Weight readings I have:")
+        for iso in sorted(known.keys(), reverse=True):
+            lines.append(f"- {_fmt_date(iso)}: {known[iso]} lb")
+
+    # Per-window endpoint math.
+    windows = audit.get("windows") or {}
+    shown = [windows[k] for k in ("3d", "7d", "14d", "30d") if k in windows]
+    if shown:
+        lines.append("")
+        lines.append("Trend by window (endpoint to endpoint):")
+        for w in shown:
+            lines.append(
+                f"- {w['window_days']}-day: {w['start_weight']} lb ({_fmt_date(w['start_date'])}) -> "
+                f"{w['end_weight']} lb ({_fmt_date(w['end_date'])}) = {w['change_lbs']} lb over "
+                f"{w['days_elapsed']} days = {w['lbs_per_week']} lb/week"
+            )
+
+    # Optional projection line (only when it's a real projection).
+    if projection and projection.get("status") == "projected":
+        from app.services.weight_projection import format_projection
+        lines.append("")
+        lines.append(format_projection(projection))
+
+    return "\n".join(lines).strip()

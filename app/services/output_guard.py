@@ -75,7 +75,7 @@ def projection_date_is_consistent(text: str, projection: dict[str, Any] | None) 
         est_date = date.fromisoformat(est)
     except (ValueError, TypeError):
         return True
-    mentioned = _extract_dates(text, est_date.year)
+    mentioned = _extract_dates(_strip_markdown(text), est_date.year)
     if not mentioned:
         return True  # stated weeks but no date -> can't be wrong about a date
     # Consistent if ANY mentioned date is within tolerance of the backend date.
@@ -85,11 +85,17 @@ def projection_date_is_consistent(text: str, projection: dict[str, Any] | None) 
 # --- weight date/value validation -------------------------------------------
 
 _WEIGHT_TOLERANCE_LBS = 0.3
-# "June 17: 202.4 lbs" / "June 17 - 200.4" / "Jun 17 200 lbs"
+# Catches: "June 17: 202.4 lbs", "June 17, 2026: 202.4 lbs", "Jun 17 - 200.4 lb",
+# "June 17, 2026 — 202.4 pounds". Markdown (*, _, `) is stripped before matching.
 _DATE_WEIGHT_RE = re.compile(
-    r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*[:\-–—]?\s*(\d{2,3}(?:\.\d)?)\s*(?:lbs?|pounds?)\b",
+    r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*\d{4})?\s*[:\-–—]?\s*(\d{2,3}(?:\.\d)?)\s*(?:lbs?|pounds?)\b",
     re.IGNORECASE,
 )
+_MARKDOWN_RE = re.compile(r"[*_`]+")
+
+
+def _strip_markdown(text: str) -> str:
+    return _MARKDOWN_RE.sub("", text or "")
 
 
 def weight_data_is_consistent(text: str, audit: dict[str, Any] | None) -> bool:
@@ -108,7 +114,7 @@ def weight_data_is_consistent(text: str, audit: dict[str, Any] | None) -> bool:
             ref_year = date.fromisoformat(cur).year
         except (ValueError, TypeError):
             pass
-    for mon, day, weight in _DATE_WEIGHT_RE.findall(text or ""):
+    for mon, day, weight in _DATE_WEIGHT_RE.findall(_strip_markdown(text)):
         month = _MONTHS.get(mon.lower())
         if month is None:
             continue

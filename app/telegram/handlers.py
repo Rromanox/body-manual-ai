@@ -1373,6 +1373,24 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         user_id = user.id
 
+        # Deterministic data-audit reply: weight-data questions ("what weights did
+        # you use?", "check the math and data") are answered straight from the
+        # backend audit — NO AI — so the bot can't invent or re-date a weight, and
+        # no generic advice is appended.
+        _audit_q = payload.get("weight_trend_audit")
+        if _audit_q and message_intent.is_data_audit(question):
+            audit_reply = weight_trends.format_weight_audit_answer(
+                _audit_q, question_text=question, projection=payload.get("weight_projection")
+            )
+            session.add(CoachMessage(
+                user_id=user.id, date=target_date, message_type="q_and_a",
+                summary_payload=payload, ai_response=audit_reply,
+            ))
+            session.commit()
+            await update.message.reply_text(audit_reply)
+            log_outgoing(telegram_id, audit_reply, "q_and_a")
+            return
+
         # Last 10 Q&A exchanges as conversation history so the AI remembers the thread
         history_rows = session.scalars(
             select(CoachMessage)
