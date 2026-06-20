@@ -72,3 +72,56 @@ def detect_status_memory(message: str) -> str | None:
     if not phrase or phrase.lower() in _STOPWORDS or len(phrase) < 2:
         return None
     return phrase
+
+
+# --- constraint / preference detection --------------------------------------
+
+# Question openers (without a trailing "?") that we must NOT treat as a statement.
+_QUESTION_PREFIXES = (
+    "can ", "could ", "should ", "do ", "does ", "did ", "will ", "would ",
+    "is ", "are ", "when ", "what ", "how ", "why ", "where ", "who ",
+)
+
+# Hard limits (constraint) and softer habits (preference). Each matches from the
+# cue to the end of the message; the cue word stays in the stored content.
+_CONSTRAINT_PATTERNS = [
+    r"\bi can only\b.+",
+    r"\bi can'?t\b.+",
+    r"\bi cannot\b.+",
+    r"\bi only have\b.+",
+    r"\bi (?:don'?t|do not) have\b.+\b(gym|equipment|weights|access)\b.*",
+    r"\bi (?:work|am working)\s+\d[\d:apm\s]*\bto\b.+",
+]
+_PREFERENCE_PATTERNS = [
+    r"\bi (?:usually|normally|typically|generally)\s+(?:train|work ?out|exercise|run|lift)\b.+",
+    r"\bi prefer\b.+",
+    r"\bi (?:train|work ?out|exercise)\s+at home\b.*",
+]
+
+
+def _clean_constraint(message: str, start: int) -> str:
+    """Original-case text from the cue to end, with a leading 'I ' dropped."""
+    frag = message[start:].strip(" .!,")
+    frag = re.sub(r"^i\s+", "", frag, flags=re.IGNORECASE)
+    return frag[:1].upper() + frag[1:] if frag else frag
+
+
+def detect_constraint_memory(message: str) -> dict | None:
+    """Detect a stable training constraint/preference. Returns
+    {"type": "constraint"|"preference", "content": str} or None. Skips questions
+    so "Can I train tomorrow morning?" stays a Q&A."""
+    msg = (message or "").strip()
+    if not msg or msg.endswith("?"):
+        return None
+    low = msg.lower()
+    if low.startswith(_QUESTION_PREFIXES):
+        return None
+    for pat in _CONSTRAINT_PATTERNS:
+        m = re.search(pat, low)
+        if m:
+            return {"type": "constraint", "content": _clean_constraint(msg, m.start())}
+    for pat in _PREFERENCE_PATTERNS:
+        m = re.search(pat, low)
+        if m:
+            return {"type": "preference", "content": _clean_constraint(msg, m.start())}
+    return None

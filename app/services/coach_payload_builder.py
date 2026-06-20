@@ -6,7 +6,7 @@ already a flag.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from app.models.daily_metric import DailyMetric
@@ -271,7 +271,24 @@ def build_qa_payload(
         payload["workout_effect"] = context.workout_effect
     if context.weight_velocity:
         payload["weight_velocity"] = context.weight_velocity
-    if context.weight_projection:
+    # Question-aware weight projection: honor a target weight or hypothetical
+    # ("when do I hit 185", "if my weight stalls") named in the question. Falls
+    # back to the default goal projection.
+    if context.weight_current_lbs is not None:
+        from app.services.weight_projection import projection_for_question
+        proj_today = date.today()
+        if now and now.get("date"):
+            try:
+                proj_today = date.fromisoformat(now["date"])
+            except (ValueError, TypeError):
+                pass
+        proj = projection_for_question(
+            question, context.weight_current_lbs, context.goal_weight_lbs,
+            context.weight_weekly_rate_lbs, proj_today, trend_days=16,
+        )
+        if proj:
+            payload["weight_projection"] = proj
+    elif context.weight_projection:
         payload["weight_projection"] = context.weight_projection
     # Phase 2A: structured memory plumbed in alongside about_you. No prompt
     # references it yet — activation is Phase 2B.

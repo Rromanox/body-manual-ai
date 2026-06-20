@@ -1247,6 +1247,35 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 log_outgoing(telegram_id, reply, "memory", user_id=_sm_uid)
                 return
 
+    # Stable training constraint/preference ("I can only train mornings before 7am")
+    # — captured as memory BEFORE recommendation follow-through so it isn't misread
+    # as a follow-through reply.
+    if not is_correction:
+        constraint = message_intent.detect_constraint_memory(question)
+        if constraint:
+            _cm_uid = None
+            with SessionLocal() as session:
+                _cm_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+                if _cm_user is not None:
+                    _cm_uid = _cm_user.id
+                    already = memory_store.find_active_duplicate(
+                        session, _cm_uid, constraint["type"], constraint["content"]
+                    ) is not None
+                    memory_store.add_memory(
+                        session, _cm_uid, constraint["type"], constraint["content"],
+                        source="user_stated", confidence="high",
+                        tags=["training", "schedule"], dedupe=True,
+                    )
+            if _cm_uid is not None:
+                reply = (
+                    f"Got it — I already have that noted: {constraint['content']}."
+                    if already else
+                    f"Got it — I'll keep that in mind for your training: {constraint['content']}."
+                )
+                await update.message.reply_text(reply)
+                log_outgoing(telegram_id, reply, "memory", user_id=_cm_uid)
+                return
+
     # Retatrutide reminder via natural language: "I took my shot today",
     # "took reta yesterday", "remind me every 6 days for reta".
     with SessionLocal() as session:
@@ -1382,25 +1411,37 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("I hit a snag answering that — try again in a moment.")
         return
 
-    # Output guard: never let unresolved placeholders ("in about time", "{date}")
-    # reach the user. Regenerate once; if still broken, fall back deterministically.
-    if output_guard.has_unresolved_placeholder(response_text):
-        logger.warning("Q&A placeholder detected for user %s — regenerating", user_id)
+    # Output guard: block unresolved placeholders ("in about time", "{date}") AND
+    # projection dates that contradict the backend's estimated_date. Regenerate
+    # once; if still bad, fall back to the deterministic projection text.
+    _wp = payload.get("weight_projection")
+
+    def _output_bad(text: str) -> bool:
+        return (
+            output_guard.has_unresolved_placeholder(text)
+            or not output_guard.projection_date_is_consistent(text, _wp)
+        )
+
+    if _output_bad(response_text):
+        logger.warning("Q&A output guard tripped for user %s — regenerating", user_id)
+        repair = (
+            "Your previous answer had broken or inconsistent text. Rewrite it cleanly using the "
+            "exact numbers in the payload; never output placeholders like 'in about time' or '{date}'."
+        )
+        if _wp and _wp.get("status") == "projected":
+            repair += (
+                f" State the timeline exactly as: about {_wp['estimated_weeks']} weeks, "
+                f"around {_wp['estimated_date']} — do not change that date."
+            )
         try:
             response_text = await generate_qa_response(
-                payload, history=history, user_id=user_id,
-                extra_instruction=(
-                    "Your previous answer contained unresolved placeholder or broken text. "
-                    "Rewrite it cleanly using the exact numbers in the payload; never output "
-                    "placeholders like 'in about time', '{date}', '<date>', 'TBD', or 'None'."
-                ),
+                payload, history=history, user_id=user_id, extra_instruction=repair
             )
         except Exception:
             logger.exception("Q&A repair regeneration failed for user %s", user_id)
-        if output_guard.has_unresolved_placeholder(response_text):
-            wp = payload.get("weight_projection")
+        if _output_bad(response_text):
             response_text = (
-                weight_projection.format_projection(wp) if wp
+                weight_projection.format_projection(_wp) if _wp
                 else "Let me redo that — could you ask again?"
             )
 

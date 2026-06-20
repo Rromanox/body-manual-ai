@@ -859,6 +859,8 @@ class QAContext:
     workout_effect: dict | None = None   # recovery the day after workout vs rest
     weight_velocity: dict | None = None  # weight change rate now vs prior 4 weeks
     weight_projection: dict | None = None  # deterministic projection to goal weight
+    weight_current_lbs: float | None = None      # raw current weight (for question-aware projection)
+    weight_weekly_rate_lbs: float | None = None  # raw signed weekly trend (negative = losing)
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -994,12 +996,18 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
     coach_notes = raw_notes if isinstance(raw_notes, dict) and raw_notes else None
 
     # Deterministic weight-goal projection (backend computes; the AI narrates it).
+    # Raw current weight + signed weekly rate are also exposed so the payload
+    # builder can re-project for a target/hypothetical named in the question.
     weight_projection = None
+    weight_current_lbs = None
+    weight_weekly_rate_lbs = None
     goal_weight = getattr(user, "goal_weight_lbs", None) if user else None
-    if goal_weight is not None:
-        from app.services.weight_projection import project_weight
-        wt = _build_weight_trend(session, user_id, target_date)
-        if wt is not None and wt.current_weight_lbs is not None:
+    wt = _build_weight_trend(session, user_id, target_date)
+    if wt is not None and wt.current_weight_lbs is not None:
+        weight_current_lbs = wt.current_weight_lbs
+        weight_weekly_rate_lbs = wt.weekly_trend_lbs
+        if goal_weight is not None:
+            from app.services.weight_projection import project_weight
             weight_projection = project_weight(
                 wt.current_weight_lbs, goal_weight, wt.weekly_trend_lbs, target_date, trend_days=16
             )
@@ -1027,6 +1035,8 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         workout_effect=get_workout_recovery_effect(session, user_id, target_date),
         weight_velocity=get_weight_velocity(session, user_id, target_date),
         weight_projection=weight_projection,
+        weight_current_lbs=weight_current_lbs,
+        weight_weekly_rate_lbs=weight_weekly_rate_lbs,
     )
 
 
