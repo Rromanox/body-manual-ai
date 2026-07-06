@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import settings
-from app.telegram import handlers
+from app.telegram import handlers, training_handlers
 
 _application: Application | None = None
 
@@ -56,6 +56,14 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("checkin", handlers.checkin))
     application.add_handler(CommandHandler("creatine", handlers.creatine))
     application.add_handler(CommandHandler("reta", handlers.reta_command))
+    # Training plan module
+    application.add_handler(CommandHandler("week", training_handlers.week_command))
+    application.add_handler(CommandHandler("plan", training_handlers.plan_command))
+    application.add_handler(CommandHandler("done", training_handlers.done_command))
+    application.add_handler(CommandHandler("skip", training_handlers.skip_command))
+    application.add_handler(CommandHandler("move", training_handlers.move_command))
+    application.add_handler(CommandHandler("edit", training_handlers.edit_command))
+    application.add_handler(CommandHandler("cant", training_handlers.cant_command))
     application.add_handler(CommandHandler("weekly", handlers.weekly))
     application.add_handler(CommandHandler("manual", handlers.manual))
     application.add_handler(CommandHandler("memory", handlers.memory_command))
@@ -74,6 +82,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci_"))
     application.add_handler(CallbackQueryHandler(handlers.supplement_callback, pattern=r"^supp_"))
     application.add_handler(CallbackQueryHandler(handlers.reta_callback, pattern=r"^reta_"))
+    application.add_handler(CallbackQueryHandler(training_handlers.training_callback, pattern=r"^tr_"))
     application.add_handler(CallbackQueryHandler(handlers.delete_callback, pattern=r"^del_"))
     application.add_handler(CallbackQueryHandler(handlers.goal_callback, pattern=r"^goal:"))
 

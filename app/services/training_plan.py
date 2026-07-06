@@ -228,6 +228,44 @@ def upsert_session(
     return row
 
 
+def edit_session(
+    session: Session,
+    user_id: int,
+    d: date,
+    *,
+    duration_min: int | None = None,
+    session_type: str | None = None,
+    title: str | None = None,
+    source: str = "command",
+    commit: bool = True,
+) -> TrainingSession | None:
+    """Edit a planned session's duration / type / title. Logs the change set.
+    Returns None if there's no session on that date."""
+    row = get_session(session, user_id, d)
+    if row is None:
+        return None
+    changes: dict[str, Any] = {}
+    if session_type is not None:
+        _require(session_type, SESSION_TYPES, "session_type")
+        changes["session_type"] = {"from": row.session_type, "to": session_type}
+        row.session_type = session_type
+    if duration_min is not None:
+        changes["duration_min"] = {"from": row.duration_min, "to": duration_min}
+        row.duration_min = duration_min
+    if title is not None:
+        changes["title"] = {"from": row.title, "to": title}
+        row.title = title
+    if not changes:
+        return row
+    log_action(
+        session, user_id, action="edited", source=source,
+        session_date=d, detail={"changes": changes}, commit=False,
+    )
+    if commit:
+        session.commit()
+    return row
+
+
 def mark_completed(
     session: Session,
     user_id: int,

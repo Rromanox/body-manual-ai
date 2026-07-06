@@ -58,6 +58,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("reta", "Log/track your retatrutide shot reminder"),
         BotCommand("focus", "One action item for this week"),
         BotCommand("weekly", "This week's summary"),
+        # Training plan
+        BotCommand("today", "Today's session + recovery gate"),
+        BotCommand("week", "This week's training, day by day"),
+        BotCommand("plan", "Training phase overview & progress"),
+        BotCommand("done", "Mark today's session done"),
+        BotCommand("skip", "Skip a session (applies reschedule rules)"),
+        BotCommand("move", "Reschedule a session"),
+        BotCommand("edit", "Change a session's duration/type"),
+        BotCommand("cant", "Can't train as planned — get a substitution"),
         # Review & track
         BotCommand("manual", "Your personal body manual & patterns"),
         BotCommand("memory", "What I've learned about you"),
