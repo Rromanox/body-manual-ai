@@ -6,6 +6,7 @@ refresh marks the connection broken — callers alert the admin and prompt re-au
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import time
@@ -119,27 +120,42 @@ def apply_token_response(connection: OAuthConnection, token_data: dict[str, Any]
     connection.status = "active"
 
 
+# Per-user lock so two coroutines never refresh the same connection at once —
+# WHOOP refresh tokens rotate, so a concurrent double-refresh would invalidate
+# one and silently break syncing. Mirrors withings_client (Fix #4).
+_token_refresh_locks: dict[int, asyncio.Lock] = {}
+
+
 async def ensure_fresh_access_token(session: Session, connection: OAuthConnection) -> str:
     now = datetime.now(timezone.utc)
     if connection.expires_at is not None and connection.expires_at - REFRESH_MARGIN > now:
         return connection.access_token
-    try:
-        token_data = await _token_request(
-            {
-                "grant_type": "refresh_token",
-                "refresh_token": connection.refresh_token,
-                "client_id": settings.whoop_client_id,
-                "client_secret": settings.whoop_client_secret,
-                "scope": "offline",
-            }
-        )
-    except WhoopAuthError:
-        connection.status = "broken"
+
+    user_id = connection.user_id
+    lock = _token_refresh_locks.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        # Re-read + re-check: another coroutine may have refreshed while we waited.
+        session.refresh(connection)
+        now = datetime.now(timezone.utc)
+        if connection.expires_at is not None and connection.expires_at - REFRESH_MARGIN > now:
+            return connection.access_token
+        try:
+            token_data = await _token_request(
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": connection.refresh_token,
+                    "client_id": settings.whoop_client_id,
+                    "client_secret": settings.whoop_client_secret,
+                    "scope": "offline",
+                }
+            )
+        except WhoopAuthError:
+            connection.status = "broken"
+            session.commit()
+            raise
+        apply_token_response(connection, token_data)
         session.commit()
-        raise
-    apply_token_response(connection, token_data)
-    session.commit()
-    return connection.access_token
+        return connection.access_token
 
 
 async def _token_request(data: dict[str, str]) -> dict[str, Any]:
