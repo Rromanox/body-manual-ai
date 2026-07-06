@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -137,13 +137,44 @@ def due_reminders(session: Session, user_id: int, today: date) -> list[HealthRem
     ]
 
 
-def mark_reminded(session: Session, reminder_id: int, today: date, *, commit: bool = True) -> None:
+def mark_reminded(
+    session: Session, reminder_id: int, today: date, *, now: datetime | None = None, commit: bool = True
+) -> None:
     reminder = session.get(HealthReminder, reminder_id)
     if reminder is None:
         return
     reminder.last_reminded_date = today
+    reminder.last_reminded_at = now or datetime.now(timezone.utc)
     if commit:
         session.commit()
+
+
+# How long after a reminder a bare "yes"/"done" still counts as confirming it.
+_CONFIRM_WINDOW_HOURS = 6
+
+
+def awaiting_confirmation(
+    session: Session,
+    user_id: int,
+    now: datetime,
+    *,
+    within_hours: int = _CONFIRM_WINDOW_HOURS,
+    reminder_type: str = RETA_TYPE,
+) -> HealthReminder | None:
+    """The active reminder awaiting confirmation: reminded within ``within_hours``
+    and not yet completed today. Lets a bare "yes"/"done" reply log the shot
+    (Bug #1) without hijacking unrelated "yes" messages."""
+    reminder = get(session, user_id, reminder_type)
+    if reminder is None or not reminder.is_active or reminder.last_reminded_at is None:
+        return None
+    if reminder.last_completed_date == now.date():
+        return None  # already logged today
+    last_at = reminder.last_reminded_at
+    if last_at.tzinfo is None:
+        last_at = last_at.replace(tzinfo=timezone.utc)
+    if now - last_at <= timedelta(hours=within_hours):
+        return reminder
+    return None
 
 
 # --- natural-language detection (deterministic) -----------------------------
@@ -153,7 +184,21 @@ _RETA_SIGNAL_RE = re.compile(r"\b(reta|retatrutide)\b|\b(my|the)\s+shot\b", re.I
 _INTERVAL_RE = re.compile(r"every\s+(\d+)\s*days?", re.IGNORECASE)
 _REMIND_RE = re.compile(r"\bremind\b", re.IGNORECASE)
 # Past-tense completion only (not "I take..."/"I'll take...").
-_TAKEN_RE = re.compile(r"\b(took|did|had|injected|done)\b", re.IGNORECASE)
+_TAKEN_RE = re.compile(r"\b(took|taken|did|had|injected|done)\b", re.IGNORECASE)
+
+# A short affirmative reply — counts as confirmation only when a reminder was just
+# sent (see awaiting_confirmation). Kept tight so "yesterday..." / "yes but..." miss.
+_BARE_CONFIRM_RE = re.compile(
+    r"^(?:(?:yes|yep|yeah|yup|done|taken|confirmed|took it|did it|already (?:took|did)|all done)\b|👍|✅)",
+    re.IGNORECASE,
+)
+
+
+def is_bare_confirmation(message: str) -> bool:
+    msg = (message or "").strip()
+    if not msg or len(msg) > 25:
+        return False
+    return bool(_BARE_CONFIRM_RE.match(msg))
 _TODAY_RE = re.compile(r"\b(today|this morning|this evening|tonight|just now)\b", re.IGNORECASE)
 _YESTERDAY_RE = re.compile(r"\b(yesterday|last night)\b", re.IGNORECASE)
 

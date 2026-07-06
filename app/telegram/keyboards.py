@@ -62,6 +62,12 @@ def supplement_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+def reta_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Taken ✓", callback_data="reta_taken"),
+    ]])
+
+
 def confirm_delete_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("Yes, delete everything", callback_data="del_confirm"),

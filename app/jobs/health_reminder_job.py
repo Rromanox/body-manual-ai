@@ -18,6 +18,7 @@ from app.services.alerts import send_admin_alert
 from app.services.chat_logger import log_outgoing
 from app.services.timekit import get_user_now, get_user_today
 from app.telegram.bot import get_application
+from app.telegram.keyboards import reta_confirm_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +51,21 @@ async def _maybe_remind(user_id: int) -> None:
             return
         today = get_user_today(user)
         due = health_reminder.due_reminders(session, user_id, today)
-        names = [r.name for r in due]
+        to_send = [(r.name, r.reminder_type) for r in due]
         for r in due:
             health_reminder.mark_reminded(session, r.id, today, commit=False)
         if due:
             session.commit()
         telegram_id = user.telegram_id
 
-    if not names:
+    if not to_send:
         return
     bot = get_application().bot
-    for name in names:
+    for name, reminder_type in to_send:
         text = f"{name} shot is due today."
-        await bot.send_message(chat_id=telegram_id, text=text)
+        # One-tap confirm for the retatrutide shot so the schedule actually
+        # advances (Bug #1) — without it, the reminder re-fires daily.
+        markup = reta_confirm_keyboard() if reminder_type == health_reminder.RETA_TYPE else None
+        await bot.send_message(chat_id=telegram_id, text=text, reply_markup=markup)
         log_outgoing(telegram_id, text, "system", user_id=user_id)
         logger.info("Sent health reminder to user %s: %s", user_id, name)

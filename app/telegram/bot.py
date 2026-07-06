@@ -73,6 +73,7 @@ def build_application() -> Application:
 
     application.add_handler(CallbackQueryHandler(handlers.checkin_callback, pattern=r"^ci_"))
     application.add_handler(CallbackQueryHandler(handlers.supplement_callback, pattern=r"^supp_"))
+    application.add_handler(CallbackQueryHandler(handlers.reta_callback, pattern=r"^reta_"))
     application.add_handler(CallbackQueryHandler(handlers.delete_callback, pattern=r"^del_"))
     application.add_handler(CallbackQueryHandler(handlers.goal_callback, pattern=r"^goal:"))
 

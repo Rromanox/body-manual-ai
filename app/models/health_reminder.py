@@ -40,6 +40,9 @@ class HealthReminder(Base):
     next_due_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_reminded_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Timestamp of the last reminder send — lets a bare "yes"/"done" reply shortly
+    # after a reminder count as a confirmation (Bug #1 fix).
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

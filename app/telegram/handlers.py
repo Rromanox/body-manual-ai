@@ -717,6 +717,29 @@ async def reta_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     log_outgoing(telegram_id, reply, "reta", user_id=uid)
 
 
+async def reta_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """One-tap 'Taken ✓' on a retatrutide reminder — logs the shot so the
+    schedule advances (Bug #1)."""
+    query = update.callback_query
+    if query is None or query.from_user is None:
+        return
+    await query.answer()
+    if (query.data or "") != "reta_taken":
+        return
+    telegram_id = query.from_user.id
+    reply = None
+    with SessionLocal() as session:
+        user = session.scalar(select(User).where(User.telegram_id == telegram_id))
+        if user is None:
+            return
+        uid = user.id
+        today = get_user_today(user)
+        r = health_reminder.log_completion(session, uid, today)
+        reply = health_reminder.format_logged(r, today=today)
+    await query.edit_message_text(f"Taken ✓ — {reply}")
+    log_outgoing(telegram_id, reply, "reta", user_id=uid)
+
+
 async def timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """View or set the user's IANA timezone. /timezone America/New_York"""
     if update.message is None or update.effective_user is None:
@@ -1280,13 +1303,20 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 return
 
     # Retatrutide reminder via natural language: "I took my shot today",
-    # "took reta yesterday", "remind me every 6 days for reta".
+    # "took reta yesterday", "remind me every 6 days for reta". Also: a bare
+    # "yes"/"done" shortly after a reminder confirms the shot (Bug #1).
+    _reta_awaiting = False
     with SessionLocal() as session:
         _reta_user = session.scalar(select(User).where(User.telegram_id == telegram_id))
         _reta_uid = _reta_user.id if _reta_user else None
-        _reta_today = get_user_today(_reta_user) if _reta_user else None
+        _reta_now = get_user_now(_reta_user) if _reta_user else None
+        _reta_today = _reta_now.date() if _reta_now else None
+        if _reta_user is not None:
+            _reta_awaiting = health_reminder.awaiting_confirmation(session, _reta_uid, _reta_now) is not None
     if _reta_user is not None and not route_to_qa:
         reta_intent = health_reminder.detect_reta_message(question, _reta_today)
+        if reta_intent is None and _reta_awaiting and health_reminder.is_bare_confirmation(question):
+            reta_intent = {"action": "log", "date": _reta_today}
         if reta_intent is not None:
             with SessionLocal() as session:
                 if reta_intent["action"] == "set_interval":
