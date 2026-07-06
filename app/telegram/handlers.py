@@ -1567,7 +1567,9 @@ async def _update_coach_notes(user_id: int, user_message: str, ai_response: str)
             user.coach_notes = merged
             session.commit()
     except Exception:
-        pass  # never let background fact extraction crash anything
+        # Never let background fact extraction crash the reply — but don't hide
+        # the failure either (Fix #5).
+        logger.exception("coach_notes update failed for user %s", user_id)
 
 
 HELP_TEXT = """\
