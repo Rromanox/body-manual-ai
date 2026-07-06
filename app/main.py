@@ -79,6 +79,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.default_timezone))
+    # Every scheduled job is wrapped in logged_job so each run is recorded in the
+    # job_runs table (Fix #2) — name, start/finish, success/error.
+    from functools import partial
+    from app.services.job_log import logged_job
+
+    def _job(job_name, fn):
+        return partial(logged_job, job_name, fn)
+
     # Wake-aware morning message: poll every MORNING_WATCH_INTERVAL_MINUTES.
     # run_daily_message decides per user whether their LOCAL morning watch window
     # has arrived and whether their main sleep is ready — tz-aware and DST-correct
@@ -86,7 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # tick serving a user in another timezone.
     from app.jobs.daily_message import morning_cron_minute_spec
     scheduler.add_job(
-        run_daily_message,
+        _job("daily_morning_message", run_daily_message),
         CronTrigger(minute=morning_cron_minute_spec(settings.morning_watch_interval_minutes)),
         id="daily_morning_message",
         max_instances=6,
@@ -96,7 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Noon + 9pm creatine nudge, same hourly-tick/per-user-timezone pattern as
     # the morning message. max_instances > 1 for the same cross-timezone reason.
     scheduler.add_job(
-        run_supplement_reminder,
+        _job("supplement_reminder", run_supplement_reminder),
         CronTrigger(minute=0),
         id="supplement_reminder",
         max_instances=6,
@@ -105,7 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     # Sunday-evening weekly summary — same hourly-tick pattern, gated to one day a week.
     scheduler.add_job(
-        run_weekly_message,
+        _job("weekly_summary", run_weekly_message),
         CronTrigger(minute=0),
         id="weekly_summary",
         max_instances=6,
@@ -115,7 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Gated proactive ping: fires when recovery is low 3+ days in a row, after
     # the morning message has gone out, during reasonable hours only.
     scheduler.add_job(
-        run_proactive_check,
+        _job("proactive_check", run_proactive_check),
         CronTrigger(minute=0),
         id="proactive_check",
         max_instances=3,
@@ -125,7 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Recurring health reminders (e.g. retatrutide every N days). Hourly tick,
     # per-user local clock; once-per-due-date via last_reminded_date.
     scheduler.add_job(
-        run_health_reminders,
+        _job("health_reminders", run_health_reminders),
         CronTrigger(minute=0),
         id="health_reminders",
         max_instances=3,

@@ -2,6 +2,7 @@ from app.models.coach_message import CoachMessage
 from app.models.daily_metric import DailyMetric
 from app.models.experiment import Experiment
 from app.models.health_reminder import HealthReminder
+from app.models.job_run import JobRun
 from app.models.journal_entry import JournalEntry
 from app.models.message_log import MessageLog
 from app.models.oauth_connection import OAuthConnection
@@ -15,6 +16,7 @@ __all__ = [
     "DailyMetric",
     "Experiment",
     "HealthReminder",
+    "JobRun",
     "JournalEntry",
     "MessageLog",
     "OAuthConnection",

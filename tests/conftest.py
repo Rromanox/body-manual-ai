@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base
 from app.models.health_reminder import HealthReminder
+from app.models.job_run import JobRun
 from app.models.recommendation import RecommendationLedger
 from app.models.user import User
 from app.models.user_memory import UserMemory
@@ -23,6 +24,7 @@ _TABLES = [
     UserMemory.__table__,
     RecommendationLedger.__table__,
     HealthReminder.__table__,
+    JobRun.__table__,
 ]
 
 
