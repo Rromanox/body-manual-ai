@@ -90,7 +90,6 @@ class DailySnapshot:
     readiness_streak: int = 0             # consecutive days recovery >= 67 (WHOOP green)
     workout_effect: dict | None = None   # recovery after workout vs rest days
     weight_velocity: dict | None = None  # weight change rate now vs prior 4 weeks (90d lookback)
-    weight_velocity: dict | None = None  # body comp velocity: rate now vs 4 weeks ago
 
 
 def build_daily_snapshot(session: Session, user_id: int, target_date: date) -> DailySnapshot:

@@ -13,6 +13,7 @@ from app.models.user import User
 from app.services import health_reminder
 from app.services.alerts import send_admin_alert
 from app.services.chat_logger import log_outgoing
+from app.services.notify import send_with_retry
 from app.services.timekit import get_user_now, get_user_today
 from app.telegram.bot import get_application
 from app.telegram.keyboards import reta_confirm_keyboard
@@ -61,6 +62,7 @@ async def _maybe_remind(user_id: int) -> None:
         # One-tap confirm for the retatrutide shot so the schedule actually
         # advances (Bug #1) — without it, the reminder re-fires daily.
         markup = reta_confirm_keyboard() if reminder_type == health_reminder.RETA_TYPE else None
-        await bot.send_message(chat_id=telegram_id, text=text, reply_markup=markup)
-        log_outgoing(telegram_id, text, "system", user_id=user_id)
-        logger.info("Sent health reminder to user %s: %s", user_id, name)
+        sent = await send_with_retry(bot, telegram_id, text, reply_markup=markup)
+        if sent is not None:
+            log_outgoing(telegram_id, text, "system", user_id=user_id)
+            logger.info("Sent health reminder to user %s: %s", user_id, name)
