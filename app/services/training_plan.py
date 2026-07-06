@@ -133,7 +133,9 @@ def plan_overview(session: Session, user_id: int, today: date) -> dict[str, Any]
             select(TrainingSession).where(TrainingSession.user_id == user_id)
         ).all()
     )
-    non_rest = [r for r in rows if r.session_type != "rest"]
+    # Exclude relocated (moved) rows — they're represented by their target day, so
+    # counting both would double the denominator.
+    non_rest = [r for r in rows if r.session_type != "rest" and r.status != "moved"]
     done = [r for r in non_rest if r.status in DONE_STATUSES]
     crit = [r for r in rows if r.priority == "critical"]
     crit_done = [r for r in crit if r.status in DONE_STATUSES]
