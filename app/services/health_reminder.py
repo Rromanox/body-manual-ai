@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.health_reminder import HealthReminder
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,20 @@ def stop(session: Session, user_id: int, reminder_type: str = RETA_TYPE, *, comm
     if commit:
         session.commit()
     return reminder
+
+
+def users_with_active_reminders(session: Session) -> list[User]:
+    """Users who have any active health reminder — independent of WHOOP/Withings
+    connection status (Fix #3: a medication reminder must not stop when a fitness
+    token disconnects)."""
+    return list(
+        session.scalars(
+            select(User)
+            .join(HealthReminder, HealthReminder.user_id == User.id)
+            .where(HealthReminder.is_active.is_(True))
+            .distinct()
+        ).all()
+    )
 
 
 def due_reminders(session: Session, user_id: int, today: date) -> list[HealthReminder]:

@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
-
 from app.db import SessionLocal
-from app.models.oauth_connection import OAuthConnection
 from app.models.user import User
 from app.services import health_reminder
 from app.services.alerts import send_admin_alert
@@ -29,11 +26,9 @@ REMIND_END_HOUR = 21
 
 async def run_health_reminders() -> None:
     with SessionLocal() as session:
-        users = session.scalars(
-            select(User)
-            .join(OAuthConnection, OAuthConnection.user_id == User.id)
-            .where(OAuthConnection.provider == "whoop", OAuthConnection.status == "active")
-        ).all()
+        # Independent of WHOOP status — a med reminder must fire even if the
+        # fitness connection is broken (Fix #3).
+        users = health_reminder.users_with_active_reminders(session)
         due_ids = [u.id for u in users if REMIND_START_HOUR <= get_user_now(u).hour < REMIND_END_HOUR]
 
     for user_id in due_ids:
