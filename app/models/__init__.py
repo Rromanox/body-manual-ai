@@ -8,6 +8,8 @@ from app.models.message_log import MessageLog
 from app.models.oauth_connection import OAuthConnection
 from app.models.observation import Observation
 from app.models.recommendation import RecommendationLedger
+from app.models.training_log import TrainingLog
+from app.models.training_session import TrainingSession
 from app.models.user import User
 from app.models.user_memory import UserMemory
 
@@ -22,6 +24,8 @@ __all__ = [
     "OAuthConnection",
     "Observation",
     "RecommendationLedger",
+    "TrainingLog",
+    "TrainingSession",
     "User",
     "UserMemory",
 ]

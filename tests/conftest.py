@@ -16,6 +16,8 @@ from app.db import Base
 from app.models.health_reminder import HealthReminder
 from app.models.job_run import JobRun
 from app.models.recommendation import RecommendationLedger
+from app.models.training_log import TrainingLog
+from app.models.training_session import TrainingSession
 from app.models.user import User
 from app.models.user_memory import UserMemory
 
@@ -25,6 +27,8 @@ _TABLES = [
     RecommendationLedger.__table__,
     HealthReminder.__table__,
     JobRun.__table__,
+    TrainingSession.__table__,
+    TrainingLog.__table__,
 ]
 
 
