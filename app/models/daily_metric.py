@@ -4,10 +4,9 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.db import Base, JSONVariant
 
 
 class DailyMetric(Base):
@@ -48,8 +47,8 @@ class DailyMetric(Base):
     bone_mass: Mapped[float | None] = mapped_column(Float)
     bmi: Mapped[float | None] = mapped_column(Float)
 
-    raw_whoop_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    raw_withings_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    raw_whoop_json: Mapped[dict[str, Any] | None] = mapped_column(JSONVariant)
+    raw_withings_json: Mapped[dict[str, Any] | None] = mapped_column(JSONVariant)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

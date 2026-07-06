@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base
+from app.models.daily_metric import DailyMetric
 from app.models.health_reminder import HealthReminder
 from app.models.job_run import JobRun
 from app.models.recommendation import RecommendationLedger
@@ -29,6 +30,7 @@ _TABLES = [
     JobRun.__table__,
     TrainingSession.__table__,
     TrainingLog.__table__,
+    DailyMetric.__table__,
 ]
 
 
