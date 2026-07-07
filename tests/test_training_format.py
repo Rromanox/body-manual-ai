@@ -43,6 +43,22 @@ def test_status_icons_and_week_format():
     assert "3×10 SS" in text
 
 
+def test_week_and_plan_flag_pre_start():
+    before = date(2026, 7, 6)  # plan starts Mon Jul 13
+    rows = [_row(date=date(2026, 7, 14), session_type="intervals", title="3×10 SS", duration_min=60)]
+    wk_text = fmt.format_week(rows, 1, today=before)
+    assert "starts Mon Jul 13" in wk_text  # not mistaken for the current week
+
+    ov = {"current_week": None, "current_phase": None, "completed_sessions": 0,
+          "total_sessions": 56, "completion_pct": 0, "critical_done": 0,
+          "critical_total": 3, "critical_remaining": 3}
+    plan_text = fmt.format_plan(ov, today=before)
+    assert "hasn't started yet" in plan_text
+    assert "Monday, Jul 13" in plan_text
+    # A current week does NOT get the "starts" note.
+    assert "starts" not in fmt.format_week(rows, 1, today=date(2026, 7, 15))
+
+
 def test_format_today_block_matches_spec_shape():
     row = _row(date=date(2026, 9, 1), week=8, phase="build",
                session_type="intervals", title="2×20 min Sweet Spot", duration_min=75)

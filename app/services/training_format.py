@@ -45,23 +45,38 @@ def format_session_line(row: TrainingSession) -> str:
     return f"{_icon(row)} {_day_label(row.date)} — {star}{row.title}{dur}{loaded}"
 
 
-def format_week(rows: list[TrainingSession], week: int) -> str:
+def format_week(rows: list[TrainingSession], week: int, *, today: date | None = None) -> str:
     phase = tp.phase_for_week(week)
+    start, _ = tp.week_date_range(week)
     header = f"📋 Week {week} of {tp.PLAN_WEEKS} — {phase.title()}"
+    # If this week is still in the future (e.g. the plan hasn't started), say so,
+    # so "Week 1" is never mistaken for the current calendar week.
+    if today is not None and start > today:
+        header += f" — starts {start:%a} {start:%b} {start.day}"
     if not rows:
-        return header + "\n(no sessions seeded yet — run the seed script)"
+        return header + "\n(no sessions seeded yet)"
     return header + "\n" + "\n".join(format_session_line(r) for r in rows)
 
 
-def format_plan(overview: dict) -> str:
+def format_plan(overview: dict, *, today: date | None = None) -> str:
     wk = overview["current_week"]
     phase = overview["current_phase"]
     if wk is None:
-        head = "📊 Plan — outside the training window"
-    else:
-        head = f"📊 Plan — Week {wk} of {tp.PLAN_WEEKS} ({phase})"
+        if today is not None and today < tp.PLAN_START:
+            days = (tp.PLAN_START - today).days
+            start = tp.PLAN_START
+            head = (
+                f"📊 Plan — hasn't started yet. Week 1 ({tp.phase_for_week(1).title()}) begins "
+                f"{start:%A}, {start:%b} {start.day} — {days} day{'s' if days != 1 else ''} to go."
+            )
+        else:
+            head = (
+                f"📊 Plan — complete (ran {tp.PLAN_START:%b} {tp.PLAN_START.day}"
+                f"–{tp.PLAN_END:%b} {tp.PLAN_END.day})."
+            )
+        return f"{head}\n⭐ Critical rides: {overview['critical_done']} of {overview['critical_total']} done"
     return (
-        f"{head}\n"
+        f"📊 Plan — Week {wk} of {tp.PLAN_WEEKS} ({phase})\n"
         f"Completed: {overview['completed_sessions']}/{overview['total_sessions']} "
         f"sessions ({overview['completion_pct']}%)\n"
         f"⭐ Critical rides: {overview['critical_done']} of {overview['critical_total']} done "

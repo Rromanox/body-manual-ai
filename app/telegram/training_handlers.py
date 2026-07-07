@@ -81,7 +81,7 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             week = max(1, min(tp.PLAN_WEEKS, int(context.args[0])))
         week = week or tp.week_of(today) or 1
         rows = tp.get_week(session, user.id, week)
-        text = fmt.format_week(rows, week)
+        text = fmt.format_week(rows, week, today=today)
         uid = user.id
     await _reply(update, text, uid)
 
@@ -109,7 +109,8 @@ async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if user is None:
             await update.message.reply_text("Run /start first so I can set you up.")
             return
-        text = fmt.format_plan(tp.plan_overview(session, user.id, get_user_today(user)))
+        _today = get_user_today(user)
+        text = fmt.format_plan(tp.plan_overview(session, user.id, _today), today=_today)
         uid = user.id
     await _reply(update, text, uid)
 
