@@ -1332,6 +1332,25 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             log_outgoing(telegram_id, reta_reply, "reta", user_id=_reta_uid)
             return
 
+    # Training plan via natural language — skip / move / soften / substitute /
+    # complete. Routes to the SAME shared service ops the /skip //move //edit
+    # //cant //done commands use (parity). A bare "done" shortly after the morning
+    # session block completes today's session (mirrors the reta confirmation).
+    if _reta_user is not None and not route_to_qa:
+        from app.services import training_nl
+        _tr_intent = training_nl.detect_training_message(question, _reta_today)
+        if _tr_intent is None and training_nl.is_bare_done(question):
+            with SessionLocal() as session:
+                _await_row = training_nl.awaiting_done_confirmation(session, _reta_uid, _reta_now)
+            if _await_row is not None:
+                _tr_intent = {"action": "complete", "date": _reta_today}
+        if _tr_intent is not None:
+            _tr_text, _tr_markup = await _handle_training_nl(_reta_uid, _tr_intent, _reta_today, _reta_now)
+            if _tr_text is not None:
+                await update.message.reply_text(_tr_text, reply_markup=_tr_markup)
+                log_outgoing(telegram_id, _tr_text, "training", user_id=_reta_uid)
+                return
+
     # Recommendation follow-through: "I skipped training", "stayed under 10", etc.
     # Only considered when there are recent pending recommendations to update.
     ft_pending: list = []
@@ -1523,6 +1542,61 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             user_id, response_text, source_type="qa", source_message_id=msg_id
         )
     )
+
+
+async def _handle_training_nl(user_id: int, intent: dict, today: date, now):
+    """Dispatch a natural-language training intent to the shared service ops and
+    build the reply with the same helpers the /skip //move //cant commands use, so
+    the command and NL paths converge on one mutation per operation. Returns
+    (text, reply_markup); text is None when nothing applies."""
+    from app.services import training_plan as _tp
+    from app.services import training_rules as _rules
+    from app.services import training_substitution as _subs
+    from app.services import training_format as _tfmt
+    from app.telegram import keyboards as _kb
+    from app.telegram import training_handlers as _th
+
+    action = intent["action"]
+    with SessionLocal() as session:
+        if action == "skip":
+            out = _rules.skip_session(session, user_id, intent["date"], source="natural_language")
+            return _th._skip_reply(out)
+        if action == "move":
+            out = _rules.move_session(session, user_id, intent["from"], intent["to"], source="natural_language")
+            return _th._move_reply(out, intent["from"], intent["to"])
+        if action == "complete":
+            d = intent["date"]
+            row = _tp.mark_completed(session, user_id, d, source="natural_language")
+            if row is None:
+                return f"Nothing to complete on {d:%b} {d.day} (rest day or no session).", None
+            return f"✅ Logged {row.title} for {_tfmt._day_label(d)}.", None
+        if action == "soften":
+            d = intent["date"]
+            row = _tp.get_session(session, user_id, d)
+            if row is None or row.session_type == "rest":
+                return f"Nothing to ease off on {d:%b} {d.day}.", None
+            downgrade = {"intervals": "tempo", "tempo": "z2"}
+            if row.session_type in downgrade:
+                new = downgrade[row.session_type]
+                _tp.edit_session(session, user_id, d, session_type=new, source="natural_language")
+                return f"✏️ Eased {_tfmt._day_label(d)} back to {new}.", None
+            if row.duration_min:
+                newdur = int(row.duration_min * 0.8)
+                _tp.edit_session(session, user_id, d, duration_min=newdur, source="natural_language")
+                return f"✏️ Trimmed {_tfmt._day_label(d)} to {newdur} min.", None
+            return f"{_tfmt._day_label(d)} is already easy — left it as is.", None
+        if action == "cant":
+            constraint = intent["constraint"]
+            row = _tp.get_session(session, user_id, today)
+            if row is None or row.session_type == "rest":
+                return "Today's a rest day — nothing to change.", None
+            if constraint == "prompt":
+                return "What's getting in the way today?", _kb.cant_keyboard(today.isoformat())
+            out = _subs.substitute(
+                session, user_id, today, constraint, minutes=intent.get("minutes"), source="natural_language"
+            )
+            return _th._subst_reply(session, user_id, out, today)
+    return None, None
 
 
 async def _run_memory_extraction(user_id: int, user_message: str, ai_response: str) -> None:

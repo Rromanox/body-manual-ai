@@ -159,19 +159,23 @@ async def move_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         out = rules.move_session(session, user.id, from_d, to_d, source="command")
         uid = user.id
-        markup = None
-        if out["outcome"] == "rejected" and out.get("rule") == "protected_week":
-            text = f"Can't move into Week {out['week']} — recovery/taper weeks never gain sessions."
-        elif out["outcome"] == "rejected":
-            text = "That date is outside the training plan."
-        elif out["outcome"] == "noop":
-            text = "Nothing to move on that date."
-        elif out["outcome"] == "needs_confirm_swap":
-            text = f"{to_d:%b} {to_d.day} already has \"{out['target_title']}\". Swap them?"
-            markup = keyboards.move_swap_keyboard(from_d.isoformat(), to_d.isoformat())
-        else:
-            text = f"🔁 Moved to {to_d:%b} {to_d.day}."
+        text, markup = _move_reply(out, from_d, to_d)
     await _reply(update, text, uid, reply_markup=markup)
+
+
+def _move_reply(out: dict, from_d: date, to_d: date):
+    if out["outcome"] == "rejected" and out.get("rule") == "protected_week":
+        return f"Can't move into Week {out['week']} — recovery/taper weeks never gain sessions.", None
+    if out["outcome"] == "rejected":
+        return "That date is outside the training plan.", None
+    if out["outcome"] == "noop":
+        return "Nothing to move on that date.", None
+    if out["outcome"] == "needs_confirm_swap":
+        return (
+            f"{to_d:%b} {to_d.day} already has \"{out['target_title']}\". Swap them?",
+            keyboards.move_swap_keyboard(from_d.isoformat(), to_d.isoformat()),
+        )
+    return f"🔁 Moved to {to_d:%b} {to_d.day}.", None
 
 
 async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -11,7 +11,7 @@ enum, matching the codebase convention (health_reminders.reminder_type etc.).
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -226,6 +226,24 @@ def upsert_session(
     if commit:
         session.commit()
     return row
+
+
+def mark_presented(
+    session: Session,
+    user_id: int,
+    d: date,
+    *,
+    now: datetime | None = None,
+    commit: bool = True,
+) -> None:
+    """Stamp today's session as shown in the morning block, so a bare "done"
+    reply within the window can complete it (mirrors reta.mark_reminded)."""
+    row = get_session(session, user_id, d)
+    if row is None:
+        return
+    row.presented_at = now or datetime.now(timezone.utc)
+    if commit:
+        session.commit()
 
 
 def edit_session(

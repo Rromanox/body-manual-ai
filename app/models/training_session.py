@@ -49,6 +49,9 @@ class TrainingSession(Base):
     moved_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     completed_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     recovery_adjustment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When today's session was last shown in the morning block — lets a bare "done"
+    # reply shortly after count as completing it (mirrors reta last_reminded_at).
+    presented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
