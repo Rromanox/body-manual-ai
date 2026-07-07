@@ -57,6 +57,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("creatine", handlers.creatine))
     application.add_handler(CommandHandler("reta", handlers.reta_command))
     # Training plan module
+    application.add_handler(CommandHandler("session", training_handlers.session_command))
     application.add_handler(CommandHandler("week", training_handlers.week_command))
     application.add_handler(CommandHandler("plan", training_handlers.plan_command))
     application.add_handler(CommandHandler("done", training_handlers.done_command))

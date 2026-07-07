@@ -22,7 +22,7 @@ from app.services import training_rules as rules
 from app.services import training_substitution as subs
 from app.services.chat_logger import log_outgoing
 from app.services.notify import send_with_retry
-from app.services.timekit import get_user_today
+from app.services.timekit import get_user_now, get_user_today
 from app.telegram import keyboards
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,21 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         text = fmt.format_week(rows, week)
         uid = user.id
     await _reply(update, text, uid)
+
+
+async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """On-demand training block for today (session + recovery gate). Separate from
+    /today, which is the general coach message."""
+    if update.message is None or update.effective_user is None:
+        return
+    with SessionLocal() as session:
+        user = _user(session, update.effective_user.id)
+        if user is None:
+            await update.message.reply_text("Run /start first so I can set you up.")
+            return
+        uid = user.id
+        now = get_user_now(user)
+    await send_today_block(context.bot, uid, update.effective_user.id, now, source="command")
 
 
 async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

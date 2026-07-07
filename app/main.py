@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         BotCommand("focus", "One action item for this week"),
         BotCommand("weekly", "This week's summary"),
         # Training plan
-        BotCommand("today", "Today's session + recovery gate"),
+        BotCommand("session", "Today's training session + recovery gate"),
         BotCommand("week", "This week's training, day by day"),
         BotCommand("plan", "Training phase overview & progress"),
         BotCommand("done", "Mark today's session done"),

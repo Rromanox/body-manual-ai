@@ -252,12 +252,6 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(message_text)
     log_outgoing(telegram_id, message_text, "ai_daily")
-    # Training-plan block (today's session + recovery gate). No-op outside the plan.
-    try:
-        from app.telegram import training_handlers
-        await training_handlers.send_today_block(context.bot, user_id, telegram_id, now, source="command")
-    except Exception:
-        logger.exception("Training block failed for user %s on /today", user_id)
     asyncio.create_task(
         recommendation_extractor.run_for_message(
             user_id, message_text, source_type="daily", source_message_id=coach_message_id
