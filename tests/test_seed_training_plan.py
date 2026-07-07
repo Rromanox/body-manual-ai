@@ -96,3 +96,16 @@ def test_resolve_returns_admin_user(mem_session, monkeypatch):
     make_user(mem_session, 1)  # make_user sets telegram_id = 1000 + id = 1001
     _patch_admin(monkeypatch, 1001)
     assert seed_mod._resolve_user_id(mem_session) == 1
+
+
+def test_seed_if_empty_only_runs_when_empty(mem_session):
+    make_user(mem_session)
+    first = seed_mod.seed_if_empty(mem_session, 1)
+    assert first is not None and first["sessions"] == len(seed_mod.PLAN)
+    assert _count(mem_session) == 84
+    # An edit that a re-boot must not clobber.
+    tp.edit_session(mem_session, 1, date(2026, 7, 14), duration_min=999, source="command")
+    # Second call is a no-op because a plan already exists.
+    assert seed_mod.seed_if_empty(mem_session, 1) is None
+    assert _count(mem_session) == 84
+    assert tp.get_session(mem_session, 1, date(2026, 7, 14)).duration_min == 999  # edit preserved

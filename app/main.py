@@ -42,6 +42,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _run_migrations()
     validate_startup_settings()
 
+    # Populate the 12-week training plan on first boot (no-op once seeded, and
+    # best-effort so it can never block startup). Lets the plan go live without a
+    # manual one-off command.
+    from scripts.seed_training_plan import seed_if_empty_for_admin
+    seed_if_empty_for_admin()
+
     application = build_application()
     await application.initialize()
     await application.bot.set_webhook(

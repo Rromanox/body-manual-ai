@@ -187,6 +187,50 @@ def seed(session: Session, user_id: int, *, log: bool = True) -> dict[str, int]:
     return counts
 
 
+def seed_if_empty(session: Session, user_id: int, *, log: bool = True) -> dict[str, int] | None:
+    """Seed only when the user's plan is empty. Returns the counts if it seeded,
+    or None if a plan already exists — so it never overwrites in-flight edits."""
+    from sqlalchemy import func, select
+
+    from app.models.training_session import TrainingSession
+
+    existing = session.scalar(
+        select(func.count(TrainingSession.id)).where(TrainingSession.user_id == user_id)
+    ) or 0
+    if existing > 0:
+        return None
+    return seed(session, user_id, log=log)
+
+
+def seed_if_empty_for_admin() -> None:
+    """Best-effort startup seed: if the ADMIN_TELEGRAM_ID user's plan is empty,
+    populate it. Never raises — safe to call from app startup — and never touches
+    an already-seeded plan, so it won't revert edits."""
+    try:
+        from sqlalchemy import select
+
+        from app.config import settings
+        from app.db import SessionLocal
+        from app.models.user import User
+
+        admin_id = getattr(settings, "admin_telegram_id", 0)
+        if not admin_id:
+            logger.info("Training-plan auto-seed skipped: ADMIN_TELEGRAM_ID unset")
+            return
+        with SessionLocal() as session:
+            user = session.scalar(select(User).where(User.telegram_id == int(admin_id)))
+            if user is None:
+                logger.info("Training-plan auto-seed skipped: no user for ADMIN_TELEGRAM_ID")
+                return
+            counts = seed_if_empty(session, user.id)
+        if counts is None:
+            logger.info("Training-plan already seeded — auto-seed skipped")
+        else:
+            logger.info("Training-plan auto-seeded on startup: %s", counts)
+    except Exception:
+        logger.exception("Training-plan auto-seed failed (non-fatal)")
+
+
 def _resolve_user_id(session: Session) -> int:
     """The user to seed, resolved strictly from ADMIN_TELEGRAM_ID.
 
