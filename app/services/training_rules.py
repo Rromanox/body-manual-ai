@@ -307,3 +307,15 @@ def next_quality_session(
         .order_by(TrainingSession.date)
         .limit(1)
     )
+
+
+def apply_tired_conversion(
+    session: Session, user_id: int, as_of: date, *, source: str = "natural_language", commit: bool = True
+) -> TrainingSession | None:
+    """Rule 4, 'body tired' branch: convert the next quality session to Z2.
+    Returns the converted session (now z2), or None if there isn't one."""
+    nq = next_quality_session(session, user_id, as_of)
+    if nq is None:
+        return None
+    tp.edit_session(session, user_id, nq.date, session_type="z2", source=source, commit=commit)
+    return nq

@@ -334,6 +334,14 @@ async def _do_send_for_user(user_id: int) -> None:
         reply_markup=checkin_keyboard(set()),
     )
 
+    # Training-plan block (recovery gate) — part of THIS morning check-in, not a
+    # second job. No-op outside the plan window. Never breaks the morning message.
+    try:
+        from app.telegram import training_handlers
+        await training_handlers.send_today_block(bot, user_id, telegram_id, now, source="system")
+    except Exception:
+        logger.exception("Training block send failed for user %s", user_id)
+
     # Background: extract checkable recommendations from the message we just sent.
     from app.services import recommendation_extractor
     asyncio.create_task(

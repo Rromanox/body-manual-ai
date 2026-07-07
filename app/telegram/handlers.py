@@ -252,6 +252,12 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(message_text)
     log_outgoing(telegram_id, message_text, "ai_daily")
+    # Training-plan block (today's session + recovery gate). No-op outside the plan.
+    try:
+        from app.telegram import training_handlers
+        await training_handlers.send_today_block(context.bot, user_id, telegram_id, now, source="command")
+    except Exception:
+        logger.exception("Training block failed for user %s on /today", user_id)
     asyncio.create_task(
         recommendation_extractor.run_for_message(
             user_id, message_text, source_type="daily", source_message_id=coach_message_id
@@ -1344,6 +1350,15 @@ async def plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 _await_row = training_nl.awaiting_done_confirmation(session, _reta_uid, _reta_now)
             if _await_row is not None:
                 _tr_intent = {"action": "complete", "date": _reta_today}
+        if _tr_intent is None:
+            # Rule 4 reply ("busy" / "body tired") — only when 2+ consecutive skips
+            # actually triggered the morning prompt, so it can't hijack chatter.
+            _bt = training_nl.detect_busy_or_tired(question)
+            if _bt is not None:
+                from app.services import training_rules as _tr_rules
+                with SessionLocal() as session:
+                    if _tr_rules.consecutive_skips(session, _reta_uid, _reta_today) >= 2:
+                        _tr_intent = {"action": "busy_or_tired", "which": _bt}
         if _tr_intent is not None:
             _tr_text, _tr_markup = await _handle_training_nl(_reta_uid, _tr_intent, _reta_today, _reta_now)
             if _tr_text is not None:
@@ -1596,6 +1611,13 @@ async def _handle_training_nl(user_id: int, intent: dict, today: date, now):
                 session, user_id, today, constraint, minutes=intent.get("minutes"), source="natural_language"
             )
             return _th._subst_reply(session, user_id, out, today)
+        if action == "busy_or_tired":
+            if intent["which"] == "tired":
+                nq = _rules.apply_tired_conversion(session, user_id, today, source="natural_language")
+                if nq is None:
+                    return "Got it — take it easy. Nothing hard coming up to change.", None
+                return f"Got it — eased your next hard session ({_tfmt._day_label(nq.date)}) to Z2.", None
+            return "Got it — we'll resume the plan as written.", None
     return None, None
 
 

@@ -126,6 +126,25 @@ def is_bare_done(message: str) -> bool:
     return bool(_BARE_DONE_RE.match(msg))
 
 
+# --- rule 4 reply: "life busy or body tired?" -------------------------------
+
+_TIRED_RE = re.compile(r"\b(tired|body('?s)? tired|exhausted|wiped|fatigued|run down|worn out|no energy)\b", re.IGNORECASE)
+_BUSY_RE = re.compile(r"\b(busy|life('?s)? busy|slammed|swamped|no time|work'?s? crazy|schedule)\b", re.IGNORECASE)
+
+
+def detect_busy_or_tired(message: str) -> str | None:
+    """Return 'tired' or 'busy' for a short reply to the rule-4 prompt, else None.
+    Kept tight (short, no '?') so it only catches the prompt reply."""
+    msg = (message or "").strip()
+    if not msg or len(msg) > 40 or msg.endswith("?"):
+        return None
+    if _TIRED_RE.search(msg):
+        return "tired"
+    if _BUSY_RE.search(msg):
+        return "busy"
+    return None
+
+
 def awaiting_done_confirmation(
     session: Session, user_id: int, now: datetime, *, within_hours: int = 6
 ) -> TrainingSession | None:

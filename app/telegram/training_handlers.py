@@ -21,10 +21,38 @@ from app.services import training_plan as tp
 from app.services import training_rules as rules
 from app.services import training_substitution as subs
 from app.services.chat_logger import log_outgoing
+from app.services.notify import send_with_retry
 from app.services.timekit import get_user_today
 from app.telegram import keyboards
 
 logger = logging.getLogger(__name__)
+
+
+async def send_today_block(bot, user_id: int, telegram_id: int, now, *, source: str = "system") -> None:
+    """Send the training check-in block (recovery gate) for today. Shared by the
+    morning job and /today so there's no second morning job. No-op outside the
+    plan window or before the plan is seeded. Uses notify.send_with_retry."""
+    d = now.date()
+    if tp.week_of(d) is None:
+        return
+    with SessionLocal() as session:
+        row = tp.get_session(session, user_id, d)
+        if row is None:
+            return  # plan not seeded for this day
+        overview = tp.plan_overview(session, user_id, d)
+        g = gate.evaluate_gate(session, user_id, d)
+        markup = None
+        if g.adjustment_offered:
+            gate.record_recommendation(session, user_id, d, g, source=source, commit=False)
+            markup = keyboards.gate_keyboard(d.isoformat())
+        text = fmt.format_today_block(row, g, overview)
+        # Rule 4: two+ consecutive skips -> ask the one question.
+        if rules.consecutive_skips(session, user_id, d) >= 2:
+            text += "\n\nYou've skipped a couple in a row — life busy or body tired?"
+        tp.mark_presented(session, user_id, d, now=now, commit=False)
+        session.commit()
+    await send_with_retry(bot, telegram_id, text, reply_markup=markup)
+    log_outgoing(telegram_id, text, "training", user_id=user_id)
 
 
 async def _reply(update: Update, text: str, uid: int | None, *, reply_markup=None) -> None:
