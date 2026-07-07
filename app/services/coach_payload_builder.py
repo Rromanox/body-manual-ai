@@ -275,6 +275,10 @@ def build_qa_payload(
     # exact dated rows). The AI must quote these, never reconstruct from memory.
     if context.weight_trend_audit:
         payload["weight_trend_audit"] = context.weight_trend_audit
+    # The user's REAL seeded training plan — the coach answers plan questions from
+    # this instead of inventing one (see the "Training plans" prompt rule).
+    if context.training_plan:
+        payload["training_plan"] = context.training_plan
 
     # Question-aware weight projection: honor a target weight or hypothetical
     # ("when do I hit 185", "if my weight stalls") named in the question. Falls

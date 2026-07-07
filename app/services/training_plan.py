@@ -14,7 +14,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.training_log import TrainingLog
@@ -151,6 +151,72 @@ def plan_overview(session: Session, user_id: int, today: date) -> dict[str, Any]
         "critical_total": len(crit),
         "critical_done": len(crit_done),
         "critical_remaining": len(crit) - len(crit_done),
+    }
+
+
+def qa_training_context(
+    session: Session,
+    user_id: int,
+    today: date,
+    *,
+    upcoming_limit: int = 12,
+    horizon_days: int = 16,
+) -> dict[str, Any] | None:
+    """Compact snapshot of the REAL plan for the Q&A payload, so the coach answers
+    plan questions from the seeded schedule instead of inventing a generic one.
+    Returns None when no plan exists (nothing changes for non-training users)."""
+    total = session.scalar(
+        select(func.count(TrainingSession.id)).where(TrainingSession.user_id == user_id)
+    ) or 0
+    if total == 0:
+        return None
+
+    rows = session.scalars(
+        select(TrainingSession)
+        .where(
+            TrainingSession.user_id == user_id,
+            TrainingSession.date >= today,
+            TrainingSession.date <= today + timedelta(days=horizon_days),
+        )
+        .order_by(TrainingSession.date)
+    ).all()
+    upcoming: list[dict[str, Any]] = []
+    for r in rows:
+        if r.session_type == "rest":
+            continue
+        upcoming.append({
+            "date": str(r.date),
+            "weekday": r.date.strftime("%a"),
+            "type": r.session_type,
+            "title": r.title,
+            "duration_min": r.duration_min,
+            "loaded": r.loaded,
+            "priority": r.priority,
+            "status": r.status,
+        })
+        if len(upcoming) >= upcoming_limit:
+            break
+
+    today_row = get_session(session, user_id, today)
+    today_info = None
+    if today_row is not None:
+        today_info = {
+            "type": today_row.session_type,
+            "title": today_row.title,
+            "duration_min": today_row.duration_min,
+            "status": today_row.status,
+            "loaded": today_row.loaded,
+            "priority": today_row.priority,
+            "recovery_adjustment": today_row.recovery_adjustment,
+        }
+
+    return {
+        "plan_name": "12-week bikepacking build (base → build → specificity → taper)",
+        "window": {"start": str(PLAN_START), "end": str(PLAN_END), "trip_start": str(PLAN_END)},
+        "overview": plan_overview(session, user_id, today),
+        "today": today_info,
+        "upcoming": upcoming,
+        "critical_ride_dates": [str(d) for d in sorted(CRITICAL_RIDE_DATES)],
     }
 
 

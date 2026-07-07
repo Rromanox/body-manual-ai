@@ -861,6 +861,7 @@ class QAContext:
     weight_current_lbs: float | None = None      # raw current weight (for question-aware projection)
     weight_weekly_rate_lbs: float | None = None  # raw signed weekly trend (negative = losing)
     weight_trend_audit: dict | None = None       # per-window trends + selected rate + known rows
+    training_plan: dict | None = None             # the user's real seeded training plan (overview + upcoming)
 
 
 def build_qa_context(session: Session, user_id: int, target_date: date, user=None) -> QAContext:
@@ -1055,7 +1056,13 @@ def build_qa_context(session: Session, user_id: int, target_date: date, user=Non
         weight_current_lbs=weight_current_lbs,
         weight_weekly_rate_lbs=weight_weekly_rate_lbs,
         weight_trend_audit=weight_trend_audit,
+        training_plan=_training_plan_ctx(session, user_id, target_date),
     )
+
+
+def _training_plan_ctx(session: Session, user_id: int, target_date: date) -> dict | None:
+    from app.services import training_plan as _tp
+    return _tp.qa_training_context(session, user_id, target_date)
 
 
 _SAFETY_WARNING_COOLDOWN_DAYS = 3
