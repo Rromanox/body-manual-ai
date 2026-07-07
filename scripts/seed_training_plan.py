@@ -188,24 +188,26 @@ def seed(session: Session, user_id: int, *, log: bool = True) -> dict[str, int]:
 
 
 def _resolve_user_id(session: Session) -> int:
-    """Pick the user to seed. Prefers ADMIN_TELEGRAM_ID; else the only user."""
+    """The user to seed, resolved strictly from ADMIN_TELEGRAM_ID.
+
+    Raises SystemExit (non-zero exit) when ADMIN_TELEGRAM_ID is unset or matches
+    no user — never silently guess a user or seed nothing."""
     from app.config import settings
     from app.models.user import User
     from sqlalchemy import select
 
-    admin_id = getattr(settings, "admin_telegram_id", None)
-    if admin_id:
-        u = session.scalar(select(User).where(User.telegram_id == int(admin_id)))
-        if u:
-            return u.id
-    users = session.scalars(select(User).order_by(User.id)).all()
-    if not users:
-        raise SystemExit("No users found — run /start in Telegram first.")
-    if len(users) > 1:
+    admin_id = getattr(settings, "admin_telegram_id", 0)
+    if not admin_id:
         raise SystemExit(
-            f"Multiple users found ({[u.id for u in users]}); set ADMIN_TELEGRAM_ID to disambiguate."
+            "ADMIN_TELEGRAM_ID is not set — refusing to seed against a guessed user. "
+            "Set ADMIN_TELEGRAM_ID and retry."
         )
-    return users[0].id
+    user = session.scalar(select(User).where(User.telegram_id == int(admin_id)))
+    if user is None:
+        raise SystemExit(
+            f"ADMIN_TELEGRAM_ID={admin_id} matches no user — run /start in Telegram first."
+        )
+    return user.id
 
 
 def main() -> None:

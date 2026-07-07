@@ -1,10 +1,14 @@
-"""Unit 3: seed script — idempotency + correctness spot-checks."""
+"""Unit 3: seed script — idempotency + correctness spot-checks + user resolution."""
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
+
+import pytest
 
 from app.models.training_session import TrainingSession
 from app.services import training_plan as tp
+from scripts import seed_training_plan as seed_mod
 from scripts.seed_training_plan import seed
 from tests.conftest import make_user
 
@@ -64,3 +68,31 @@ def test_exactly_three_critical_rides(mem_session):
     seed(mem_session, 1)
     crit = tp.critical_rides(mem_session, 1)
     assert [s.date for s in crit] == [date(2026, 9, 5), date(2026, 9, 12), date(2026, 9, 19)]
+
+
+# --- user resolution: raise loudly, never seed silently ---------------------
+
+def _patch_admin(monkeypatch, value):
+    # settings is a frozen dataclass; swap the whole singleton (re-imported inside
+    # _resolve_user_id at call time) for one carrying just the field we need.
+    monkeypatch.setattr("app.config.settings", SimpleNamespace(admin_telegram_id=value))
+
+
+def test_resolve_raises_when_admin_unset(mem_session, monkeypatch):
+    _patch_admin(monkeypatch, 0)  # unset
+    make_user(mem_session, 1)  # a user exists, but no admin configured
+    with pytest.raises(SystemExit):
+        seed_mod._resolve_user_id(mem_session)
+
+
+def test_resolve_raises_when_admin_matches_no_user(mem_session, monkeypatch):
+    _patch_admin(monkeypatch, 999999)
+    make_user(mem_session, 1)  # telegram_id 1001, not 999999
+    with pytest.raises(SystemExit):
+        seed_mod._resolve_user_id(mem_session)
+
+
+def test_resolve_returns_admin_user(mem_session, monkeypatch):
+    make_user(mem_session, 1)  # make_user sets telegram_id = 1000 + id = 1001
+    _patch_admin(monkeypatch, 1001)
+    assert seed_mod._resolve_user_id(mem_session) == 1
